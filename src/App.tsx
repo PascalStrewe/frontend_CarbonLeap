@@ -6,6 +6,8 @@ import InterventionRequest from './components/intervention-request';
 import ReportingPage from './components/reporting-page';
 import AdminUpload from './components/admin-upload';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { InterventionProvider } from './context/InterventionContext';
+
 
 const ProtectedRoute = ({ children }) => {
   const { user, isLoading } = useAuth();
@@ -116,9 +118,11 @@ function AppRoutes() {
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <InterventionProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </InterventionProvider>
     </AuthProvider>
   );
 }

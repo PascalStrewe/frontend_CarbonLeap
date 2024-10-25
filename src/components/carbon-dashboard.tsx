@@ -10,17 +10,25 @@ import {
   Home,
   TrendingUp,
   Activity,
-  ChevronLeft
+  ChevronLeft,
+  ArrowUpRight,
+  ArrowDownRight
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useAuth } from '../context/AuthContext';
-import logo from 'C:/Users/Pascal Strewe/Downloads/carbonleap_logo.webp';
+import { useInterventions } from '../context/InterventionContext';
 
 const Dashboard = () => {
+  const { interventionData } = useInterventions();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const isAdmin = user?.isAdmin;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Filter data for the current user unless admin
+  const filteredInterventionData = isAdmin 
+    ? interventionData 
+    : interventionData.filter(intervention => intervention.clientName === user?.name);
 
   const handleLogout = async () => {
     await logout();
@@ -31,40 +39,23 @@ const Dashboard = () => {
     navigate(path);
   };
 
-  // Sample emission data
-  const emissionData = [
-    { month: 'Jan', value: 1200 },
-    { month: 'Feb', value: 900 },
-    { month: 'Mar', value: 1500 },
-    { month: 'Apr', value: 800 },
-    { month: 'May', value: 1800 },
-    { month: 'Jun', value: 950 },
-    { month: 'Jul', value: 2000 },
-    { month: 'Aug', value: 1700 }
-  ];
-
-  const CustomTooltip = ({ active, payload, label }) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-white/25 backdrop-blur-md p-4 rounded-lg shadow-lg border border-white/20">
-          <p className="text-[#103D5E] font-medium">{label}</p>
-          <p className="text-lg font-bold" style={{ color: payload[0].value >= 1000 ? '#B9D9DF' : '#FF0000' }}>
-            {payload[0].value} tCO2e
-          </p>
-        </div>
-      );
-    }
-    return null;
-  };
+  // Calculate total stats from intervention data
+  const totalEmissions = filteredInterventionData.reduce((sum, intervention) => 
+    sum + intervention.emissionsAbated, 0
+  );
+  const totalInterventions = filteredInterventionData.length;
+  const pendingRequests = filteredInterventionData.filter(
+    intervention => intervention.status === 'Pending'
+  ).length;
   
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
-      {/* Navigation - now transparent with white border */}
+      {/* Navigation */}
       <nav className="backdrop-blur-sm border-b border-white/50 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex justify-between items-center p-4">
           <div className="flex items-center space-x-2">
             <img 
-              src={logo}
+              src="/images/logo.webp"
               alt="CarbonLeap Logo" 
               className="h-20 w-auto"
             />
@@ -154,71 +145,30 @@ const Dashboard = () => {
               <MetricCard 
                 icon={<Activity className="h-6 w-6 text-[#103D5E]" />}
                 title="Total Emission Reduction" 
-                value="2,450"
+                value={totalEmissions.toFixed(1)}
                 unit="tCO2e"
-                trend="+12.3%"
+                trend={`+${((totalEmissions / 1000) * 100).toFixed(1)}%`}
                 positive={true}
               />
               <MetricCard 
                 icon={<Clock className="h-6 w-6 text-[#103D5E]" />}
                 title="Pending Requests" 
-                value="3"
+                value={pendingRequests}
                 unit="projects"
                 trend="Active"
               />
               <MetricCard 
                 icon={<TrendingUp className="h-6 w-6 text-[#103D5E]" />}
                 title="Verified Projects" 
-                value="8"
+                value={totalInterventions - pendingRequests}
                 unit="total"
-                trend="+2 this month"
+                trend={`+${totalInterventions} this month`}
                 positive={true}
               />
             </div>
 
             {/* Chart Area */}
-            <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 mb-8 border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)] hover:shadow-xl transition-all duration-300">
-              <h2 className="text-xl font-semibold text-[#103D5E] mb-4 flex items-center gap-2">
-                <BarChart3 className="h-5 w-5" />
-                Emission Reduction Overview
-              </h2>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={emissionData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                    <defs>
-                      <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#B9D9DF" stopOpacity={0.8}/>
-                        <stop offset="95%" stopColor="#B9D9DF" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#103D5E/20" />
-                    <XAxis dataKey="month" stroke="#103D5E" />
-                    <YAxis stroke="#103D5E" />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Line
-                      type="monotone"
-                      dataKey="value"
-                      stroke="#103D5E"
-                      strokeWidth={3}
-                      dot={(props) => {
-                        const { cx, cy, payload } = props;
-                        return (
-                          <circle
-                            cx={cx}
-                            cy={cy}
-                            r={6}
-                            fill={payload.value >= 1000 ? "#B9D9DF" : "#FF0000"}
-                            stroke="white"
-                            strokeWidth={3}
-                          />
-                        );
-                      }}
-                      activeDot={{ r: 8, strokeWidth: 0 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
+            <DashboardChart interventionData={filteredInterventionData} />
 
             {/* Recent Activity */}
             <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
@@ -227,29 +177,154 @@ const Dashboard = () => {
                 Recent Activity
               </h2>
               <div className="space-y-4">
-                <ActivityItem 
-                  title="New Project Verified"
-                  description="Maritime fuel switch project #M-2024-089 has been verified"
-                  time="2 hours ago"
-                  status="success"
-                />
-                <ActivityItem 
-                  title="Request Submitted"
-                  description="New intervention request for rail transport submitted"
-                  time="1 day ago"
-                  status="pending"
-                />
-                <ActivityItem 
-                  title="Report Generated"
-                  description="Q1 2024 emissions reduction report downloaded"
-                  time="2 days ago"
-                  status="info"
-                />
+                {filteredInterventionData.slice(-3).map((intervention, index) => (
+                  <ActivityItem 
+                    key={intervention.interventionId}
+                    title={`${intervention.modality} Intervention ${intervention.interventionId}`}
+                    description={`${intervention.emissionsAbated.toFixed(1)} tCO2e reduced in ${intervention.geography}`}
+                    time={new Date(intervention.date).toLocaleDateString()}
+                    status={intervention.status?.toLowerCase() || 'success'}
+                  />
+                ))}
+                {filteredInterventionData.length === 0 && (
+                  <p className="text-center text-[#103D5E]/70">No recent activity</p>
+                )}
               </div>
             </div>
           </div>
         </div>
       </div>
+    </div>
+  );
+};
+
+const DashboardChart = ({ interventionData }) => {
+  // Process data for the chart
+  const monthlyData = interventionData.reduce((acc, intervention) => {
+    // Handle date in MM/DD/YYYY format
+    const [month, day, year] = intervention.date.split('/');
+    const date = new Date(year, month - 1, day); // month is 0-based in JS
+    const monthYear = `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}`;
+    
+    if (!acc[monthYear]) {
+      acc[monthYear] = {
+        month: monthYear,
+        value: 0,
+        cumulative: 0
+      };
+    }
+    
+    acc[monthYear].value += intervention.emissionsAbated;
+    return acc;
+  }, {});
+
+  // Convert to array and calculate cumulative values
+  const chartData = Object.values(monthlyData)
+    .sort((a, b) => new Date(a.month) - new Date(b.month))
+    .reduce((acc, curr) => {
+      const prevCumulative = acc.length > 0 ? acc[acc.length - 1].cumulative : 0;
+      curr.cumulative = prevCumulative + curr.value;
+      acc.push(curr);
+      return acc;
+    }, []);
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-white/25 backdrop-blur-md p-4 rounded-lg shadow-lg border border-white/20">
+          <p className="text-[#103D5E] font-medium">{label}</p>
+          <div className="space-y-1">
+            <p className="text-sm">
+              <span className="text-[#103D5E]/70">Monthly: </span>
+              <span className="font-bold">{payload[0].value.toFixed(1)} tCO2e</span>
+            </p>
+            <p className="text-sm">
+              <span className="text-[#103D5E]/70">Total: </span>
+              <span className="font-bold">{payload[1].value.toFixed(1)} tCO2e</span>
+            </p>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  return (
+    <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 mb-8 border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)] hover:shadow-xl transition-all duration-300 relative">
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="h-5 w-5 text-[#103D5E]" />
+          <h2 className="text-xl font-semibold text-[#103D5E]">
+            Emission Reduction Overview
+          </h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 text-sm">
+            <div className="w-3 h-3 bg-[#B9D9DF] rounded-full"></div>
+            <span className="text-[#103D5E]/70">Monthly</span>
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <div className="w-3 h-3 bg-[#103D5E] rounded-full"></div>
+            <span className="text-[#103D5E]/70">Cumulative</span>
+          </div>
+        </div>
+      </div>
+      
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+            <defs>
+              <linearGradient id="monthlyGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#B9D9DF" stopOpacity={0.8}/>
+                <stop offset="95%" stopColor="#B9D9DF" stopOpacity={0}/>
+              </linearGradient>
+              <linearGradient id="cumulativeGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#103D5E" stopOpacity={0.8}/>
+                <stop offset="95%" stopColor="#103D5E" stopOpacity={0}/>
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="#103D5E20" />
+            <XAxis 
+              dataKey="month" 
+              stroke="#103D5E" 
+              tick={{ fill: '#103D5E' }}
+            />
+            <YAxis 
+              stroke="#103D5E"
+              tick={{ fill: '#103D5E' }}
+              label={{ 
+                value: 'tCO2e', 
+                angle: -90, 
+                position: 'insideLeft',
+                fill: '#103D5E'
+              }}
+            />
+            <Tooltip content={<CustomTooltip />} />
+            <Line
+              type="monotone"
+              dataKey="value"
+              stroke="#B9D9DF"
+              strokeWidth={2}
+              dot={{ r: 4, fill: '#B9D9DF', strokeWidth: 2 }}
+              activeDot={{ r: 6 }}
+            />
+            <Line
+              type="monotone"
+              dataKey="cumulative"
+              stroke="#103D5E"
+              strokeWidth={2}
+              dot={{ r: 4, fill: '#103D5E', strokeWidth: 2 }}
+              activeDot={{ r: 6 }}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      
+      {chartData.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/10 backdrop-blur-sm rounded-xl">
+          <p className="text-[#103D5E]/70">No data available</p>
+        </div>
+      )}
     </div>
   );
 };
@@ -280,13 +355,14 @@ const MetricCard = ({ icon, title, value, unit, trend, positive }) => (
       <div className="text-3xl font-bold text-[#103D5E]">{value}</div>
       <div className="text-sm text-[#103D5E]/60 mb-1">{unit}</div>
     </div>
-    <div className={`mt-2 text-sm ${
+    <div className={`mt-2 text-sm flex items-center gap-1 ${
       positive 
         ? 'text-green-600' 
         : trend === 'Active' 
           ? 'text-amber-600' 
           : 'text-[#103D5E]/60'
     }`}>
+      {trend !== 'Active' && (positive ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />)}
       {trend}
     </div>
   </div>
