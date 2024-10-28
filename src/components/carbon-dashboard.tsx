@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+// C:/Users/PascalStrewe/Downloads/frontend_CarbonLeap/src/components/carbon-dashboard.tsx
+
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   BarChart3, 
@@ -10,33 +12,64 @@ import {
   Home,
   TrendingUp,
   Activity,
-  ChevronLeft,
   ArrowUpRight,
   ArrowDownRight
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useAuth } from '../context/AuthContext';
 import { useInterventions } from '../context/InterventionContext';
+import Sidebar from './Sidebar';
 
-const Dashboard = () => {
+interface Intervention {
+  date: string;
+  emissionsAbated: number;
+  clientName?: string;
+  interventionId: string;
+  modality: string;
+  geography: string;
+  status?: string;
+}
+
+interface MonthlyData {
+  [key: string]: {
+    month: string;
+    value: number;
+    cumulative: number;
+  };
+}
+
+interface MetricCardProps {
+  icon: React.ReactNode;
+  title: string;
+  value: string | number;
+  unit: string;
+  trend?: string;
+  positive?: boolean;
+}
+
+interface ActivityItemProps {
+  title: string;
+  description: string;
+  time: string;
+  status: string;
+}
+
+const Dashboard: React.FC = () => {
   const { interventionData } = useInterventions();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const isAdmin = user?.isAdmin;
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Filter data for the current user unless admin
   const filteredInterventionData = isAdmin 
     ? interventionData 
-    : interventionData.filter(intervention => intervention.clientName === user?.name);
+    : interventionData.filter((intervention: Intervention) => 
+        intervention.clientName === user?.name
+      );
 
   const handleLogout = async () => {
     await logout();
     navigate('/login');
-  };
-
-  const navigateTo = (path) => {
-    navigate(path);
   };
 
   // Calculate total stats from intervention data
@@ -55,7 +88,7 @@ const Dashboard = () => {
         <div className="max-w-7xl mx-auto flex justify-between items-center p-4">
           <div className="flex items-center space-x-2">
             <img 
-              src="/images/logo.webp"
+              src="/images/logo_CarbonLeap.webp"
               alt="CarbonLeap Logo" 
               className="h-20 w-auto"
             />
@@ -66,7 +99,7 @@ const Dashboard = () => {
             </div>
             <button 
               className="text-[#103D5E] hover:bg-white/20 p-2 rounded-lg transition-all duration-300"
-              onClick={() => navigateTo('/settings')}
+              onClick={() => navigate('/settings')}
             >
               <Settings className="h-5 w-5" />
             </button>
@@ -82,62 +115,7 @@ const Dashboard = () => {
 
       {/* Main Content */}
       <div className="flex min-h-[calc(100vh-4rem)]">
-        {/* Sidebar */}
-        <div className={`${sidebarCollapsed ? 'w-20' : 'w-64'} transition-all duration-300 relative`}>
-          <div className="fixed h-full bg-white/25 backdrop-blur-md border-r border-white/20">
-            <button
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className="absolute -right-3 top-8 bg-white/25 backdrop-blur-md rounded-full p-1 shadow-lg hover:shadow-xl transition-all duration-300"
-            >
-              <ChevronLeft className={`h-4 w-4 text-[#103D5E] transition-transform duration-300 ${sidebarCollapsed ? 'rotate-180' : ''}`} />
-            </button>
-            <div className="p-4 space-y-2">
-              <SidebarItem 
-                icon={<Home />} 
-                text="Dashboard" 
-                active={true}
-                onClick={() => navigateTo('/dashboard')}
-                collapsed={sidebarCollapsed}
-              />
-              <SidebarItem 
-                icon={<BarChart3 />} 
-                text="Analytics" 
-                onClick={() => navigateTo('/analytics')}
-                collapsed={sidebarCollapsed}
-              />
-              <SidebarItem 
-                icon={<FileSpreadsheet />} 
-                text="Reports" 
-                onClick={() => navigateTo('/reports')}
-                collapsed={sidebarCollapsed}
-              />
-              <SidebarItem 
-                icon={<Plus />} 
-                text="New Request" 
-                onClick={() => navigateTo('/request')}
-                collapsed={sidebarCollapsed}
-              />
-              <SidebarItem 
-                icon={<Clock />} 
-                text="Pending" 
-                onClick={() => navigateTo('/pending')}
-                collapsed={sidebarCollapsed}
-              />
-              {isAdmin && (
-                <div className="pt-4 mt-4 border-t border-white/20">
-                  <SidebarItem 
-                    icon={<FileSpreadsheet />} 
-                    text="Upload Data" 
-                    onClick={() => navigateTo('/admin/upload')}
-                    collapsed={sidebarCollapsed}
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Main Content Area */}
+        <Sidebar />
         <div className="flex-1 p-8">
           <div className="max-w-7xl mx-auto">
             {/* Summary Cards */}
@@ -198,37 +176,48 @@ const Dashboard = () => {
   );
 };
 
-const DashboardChart = ({ interventionData }) => {
+const DashboardChart = ({ interventionData }: { interventionData: Intervention[] }) => {
   // Process data for the chart
-  const monthlyData = interventionData.reduce((acc, intervention) => {
-    // Handle date in MM/DD/YYYY format
-    const [month, day, year] = intervention.date.split('/');
-    const date = new Date(year, month - 1, day); // month is 0-based in JS
-    const monthYear = `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}`;
-    
-    if (!acc[monthYear]) {
-      acc[monthYear] = {
-        month: monthYear,
-        value: 0,
-        cumulative: 0
-      };
+  const monthlyData = interventionData.reduce<MonthlyData>((acc, intervention) => {
+    try {
+      // Handle date in MM/DD/YYYY format
+      const dateParts = intervention.date.split('/');
+      if (dateParts.length !== 3) {
+        console.warn('Invalid date format:', intervention.date);
+        return acc;
+      }
+
+      const [month, day, year] = dateParts;
+      const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+      const monthYear = `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}`;
+
+      if (!acc[monthYear]) {
+        acc[monthYear] = {
+          month: monthYear,
+          value: 0,
+          cumulative: 0
+        };
+      }
+      
+      acc[monthYear].value += intervention.emissionsAbated;
+      return acc;
+    } catch (error) {
+      console.warn('Error processing date:', intervention.date, error);
+      return acc;
     }
-    
-    acc[monthYear].value += intervention.emissionsAbated;
-    return acc;
   }, {});
 
   // Convert to array and calculate cumulative values
   const chartData = Object.values(monthlyData)
-    .sort((a, b) => new Date(a.month) - new Date(b.month))
+    .sort((a, b) => new Date(a.month).getTime() - new Date(b.month).getTime())
     .reduce((acc, curr) => {
       const prevCumulative = acc.length > 0 ? acc[acc.length - 1].cumulative : 0;
       curr.cumulative = prevCumulative + curr.value;
       acc.push(curr);
       return acc;
-    }, []);
+    }, [] as Array<{ month: string; value: number; cumulative: number }>);
 
-  const CustomTooltip = ({ active, payload, label }) => {
+  const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       return (
         <div className="bg-white/25 backdrop-blur-md p-4 rounded-lg shadow-lg border border-white/20">
@@ -329,21 +318,7 @@ const DashboardChart = ({ interventionData }) => {
   );
 };
 
-const SidebarItem = ({ icon, text, active = false, onClick, collapsed }) => (
-  <button
-    onClick={onClick}
-    className={`w-full flex items-center ${collapsed ? 'justify-center' : 'space-x-3'} p-3 rounded-lg transition-all duration-300 ${
-      active 
-        ? 'bg-[#103D5E] text-white shadow-md' 
-        : 'text-[#103D5E] hover:bg-white/30'
-    }`}
-  >
-    {icon}
-    {!collapsed && <span className="font-medium">{text}</span>}
-  </button>
-);
-
-const MetricCard = ({ icon, title, value, unit, trend, positive }) => (
+const MetricCard: React.FC<MetricCardProps> = ({ icon, title, value, unit, trend, positive }) => (
   <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)] transition-all duration-300 hover:translate-y-[-4px] hover:shadow-xl group">
     <div className="flex items-start justify-between">
       <h3 className="text-[#103D5E]/60 text-sm font-medium">{title}</h3>
@@ -368,7 +343,7 @@ const MetricCard = ({ icon, title, value, unit, trend, positive }) => (
   </div>
 );
 
-const ActivityItem = ({ title, description, time, status }) => {
+const ActivityItem: React.FC<ActivityItemProps> = ({ title, description, time, status }) => {
   const statusColors = {
     success: 'border-green-500',
     pending: 'border-amber-500',

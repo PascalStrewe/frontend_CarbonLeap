@@ -1,4 +1,5 @@
-// src/context/AuthContext.tsx
+// C:/Users/PascalStrewe/Downloads/frontend_CarbonLeap/src/context/AuthContext.tsx
+
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 

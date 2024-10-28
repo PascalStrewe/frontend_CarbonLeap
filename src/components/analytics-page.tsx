@@ -1,257 +1,517 @@
-import React, { useState } from 'react';
-import { BarChart3, Filter, Search, Calendar, ArrowUpRight, ArrowDownRight, Activity } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
+// C:/Users/PascalStrewe/Downloads/frontend_CarbonLeap/src/components/analytics-page.tsx
 
-const AnalyticsPage = ({ interventionData = [] }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedModality, setSelectedModality] = useState('all');
-  const [selectedView, setSelectedView] = useState('monthly'); // 'monthly' or 'cumulative'
+import React, { useState, useMemo, useCallback } from 'react';
+import { 
+  Download, 
+  Filter, 
+  ChevronDown, 
+  ChevronUp, 
+  Search, 
+  Calendar,
+  Ship, 
+  Truck, 
+  Plane, 
+  Train,
+  PieChart as PieChartIcon,
+  BarChart as BarChartIcon,
+  SlidersHorizontal,
+  X,
+  Check,
+  Info,
+  Loader2,
+  ArrowUpRight,
+  ArrowDownRight
+} from 'lucide-react';
+import { 
+  PieChart, 
+  Pie, 
+  Cell, 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  Legend,
+  Area,
+  AreaChart
+} from 'recharts';
+import Sidebar from './Sidebar';
+import { useInterventions } from '../context/InterventionContext';
 
-  // Group and aggregate data by month
-  const monthlyData = interventionData.reduce((acc, intervention) => {
-    const date = new Date(intervention.date);
-    const monthYear = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-    
-    if (!acc[monthYear]) {
-      acc[monthYear] = {
-        month: monthYear,
-        emissions: 0,
-        interventions: 0,
-        modalityBreakdown: {}
-      };
-    }
-    
-    acc[monthYear].emissions += intervention.emissionsAbated;
-    acc[monthYear].interventions += 1;
-    
-    if (!acc[monthYear].modalityBreakdown[intervention.modality]) {
-      acc[monthYear].modalityBreakdown[intervention.modality] = 0;
-    }
-    acc[monthYear].modalityBreakdown[intervention.modality] += intervention.emissionsAbated;
-    
-    return acc;
-  }, {});
+interface ChartData {
+  name: string;
+  value: number;
+  percentage?: number;
+  color?: string;
+}
 
-  // Convert to array and sort by date
-  const monthlyChartData = Object.values(monthlyData).sort((a, b) => a.month.localeCompare(b.month));
+interface FilterState {
+  dateRange: {
+    start: string;
+    end: string;
+  };
+  modality: string;
+  geography: string;
+  interventionType: string;
+  certification: string;
+  emissionRange: {
+    min: number;
+    max: number;
+  };
+  biofuelProduct: string;
+  feedstockType: string;
+  status: string;
+}
 
-  // Calculate cumulative data
-  const cumulativeData = monthlyChartData.reduce((acc, month, index) => {
-    const prevTotal = index > 0 ? acc[index - 1].totalEmissions : 0;
-    acc.push({
-      month: month.month,
-      totalEmissions: prevTotal + month.emissions
-    });
-    return acc;
-  }, []);
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: any[];
+  label?: string;
+}
 
-  // Calculate total stats
-  const totalStats = interventionData.reduce((acc, intervention) => ({
-    totalEmissions: acc.totalEmissions + intervention.emissionsAbated,
-    totalInterventions: acc.totalInterventions + 1,
-    averagePerIntervention: (acc.totalEmissions + intervention.emissionsAbated) / (acc.totalInterventions + 1)
-  }), { totalEmissions: 0, totalInterventions: 0, averagePerIntervention: 0 });
+const CHART_COLORS = {
+  primary: ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'],
+  secondary: ['#103D5E', '#B9D9DF', '#FFD700', '#FF6B6B', '#4CAF50'],
+  modality: {
+    'Marine': '#0088FE',
+    'Road': '#00C49F',
+    'Rail': '#FFBB28',
+    'Air': '#FF8042'
+  }
+};
 
-  // Filter interventions based on search and modality
-  const filteredInterventions = interventionData.filter(intervention => {
-    const matchesSearch = intervention.interventionId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         intervention.geography.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesModality = selectedModality === 'all' || intervention.modality === selectedModality;
-    return matchesSearch && matchesModality;
-  });
+const CustomTooltip: React.FC<CustomTooltipProps> = ({ active, payload, label }) => {
+  if (!active || !payload) return null;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec] p-8">
-      <div className="max-w-7xl mx-auto">
-        {/* Header and Stats */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-[#103D5E] mb-6">Intervention Analytics</h1>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <StatsCard
-              title="Total Emissions Abated"
-              value={`${totalStats.totalEmissions.toFixed(1)} tCO2e`}
-              trend="+12.3%"
-              positive={true}
-            />
-            <StatsCard
-              title="Total Interventions"
-              value={totalStats.totalInterventions}
-              trend="Active"
-            />
-            <StatsCard
-              title="Average per Intervention"
-              value={`${totalStats.averagePerIntervention.toFixed(1)} tCO2e`}
-              trend="+5.2%"
-              positive={true}
-            />
-          </div>
-        </div>
+    <div className="bg-white/90 backdrop-blur-md p-3 rounded-lg shadow-lg border border-white/20">
+      <p className="font-medium text-[#103D5E]">{label}</p>
+      {payload.map((item, index) => (
+        <p key={index} className="text-sm text-[#103D5E]/70">
+          {item.name}: {item.value.toFixed(1)} {item.unit || 'tCO2e'}
+        </p>
+      ))}
+    </div>
+  );
+};
 
-        {/* Charts */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-          {/* Emissions Over Time */}
-          <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold text-[#103D5E]">Emissions Abated Over Time</h2>
-              <div className="flex gap-2">
+const ReportingPage: React.FC = () => {
+  const { interventionData } = useInterventions();
+  const [filters, setFilters] = useState<FilterState>({
+    dateRange: { start: '', end: '' },
+    modality: 'all',
+    geography: 'all',
+    interventionType: 'all',
+    certification: 'all',
+    emissionRange: { min: 0, max: Infinity },
+    biofuelProduct: 'all',
+    feedstockType: 'all',
+    status: 'all'
+  });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activeView, setActiveView] = useState<'cards' | 'table'>('cards');
+  const [showFilters, setShowFilters] = useState(false);
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
+
+  const processedData = useMemo(() => {
+    return interventionData
+      .filter(item => {
+        const searchLower = searchTerm.toLowerCase();
+        const matchesSearch = !searchTerm || 
+          item.clientName.toLowerCase().includes(searchLower) ||
+          item.interventionId.toLowerCase().includes(searchLower) ||
+          item.geography.toLowerCase().includes(searchLower);
+
+        const matchesModality = filters.modality === 'all' || item.modality === filters.modality;
+        const matchesGeography = filters.geography === 'all' || item.geography === filters.geography;
+
+        const itemDate = new Date(item.date);
+        const matchesDateRange = 
+          (!filters.dateRange.start || itemDate >= new Date(filters.dateRange.start)) &&
+          (!filters.dateRange.end || itemDate <= new Date(filters.dateRange.end));
+
+        return matchesSearch && matchesModality && matchesGeography && matchesDateRange;
+      })
+      .sort((a, b) => {
+        const aValue = a[sortConfig.key as keyof typeof a];
+        const bValue = b[sortConfig.key as keyof typeof b];
+        
+        if (typeof aValue === 'string' && typeof bValue === 'string') {
+          return sortConfig.direction === 'asc' 
+            ? aValue.localeCompare(bValue)
+            : bValue.localeCompare(aValue);
+        }
+        
+        return sortConfig.direction === 'asc'
+          ? (aValue as number) - (bValue as number)
+          : (bValue as number) - (aValue as number);
+      });
+  }, [interventionData, searchTerm, filters, sortConfig]);
+
+  const chartData = useMemo(() => {
+    const modalityStats = processedData.reduce((acc, item) => {
+      if (!acc[item.modality]) {
+        acc[item.modality] = {
+          name: item.modality,
+          value: 0,
+          count: 0,
+          emissions: 0
+        };
+      }
+      acc[item.modality].count++;
+      acc[item.modality].emissions += item.emissionsAbated;
+      acc[item.modality].value = acc[item.modality].emissions;
+      return acc;
+    }, {} as Record<string, any>);
+
+    const timelineData = processedData.reduce((acc, item) => {
+      const date = item.date.split('T')[0];
+      if (!acc[date]) {
+        acc[date] = {
+          date,
+          emissions: 0,
+          count: 0
+        };
+      }
+      acc[date].emissions += item.emissionsAbated;
+      acc[date].count++;
+      return acc;
+    }, {} as Record<string, any>);
+
+    return {
+      modality: Object.values(modalityStats),
+      timeline: Object.values(timelineData)
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+        .map((item, index, array) => ({
+          ...item,
+          cumulativeEmissions: array
+            .slice(0, index + 1)
+            .reduce((sum, curr) => sum + curr.emissions, 0)
+        }))
+    };
+  }, [processedData]);
+
+  const stats = useMemo(() => ({
+    totalEmissions: processedData.reduce((sum, item) => sum + item.emissionsAbated, 0),
+    totalInterventions: processedData.length,
+    averageEmission: processedData.length 
+      ? processedData.reduce((sum, item) => sum + item.emissionsAbated, 0) / processedData.length 
+      : 0,
+    topGeographies: Object.entries(
+      processedData.reduce((acc, item) => {
+        acc[item.geography] = (acc[item.geography] || 0) + item.emissionsAbated;
+        return acc;
+      }, {} as Record<string, number>)
+    )
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+  }), [processedData]);
+
+  const handleSort = (key: string) => {
+    setSortConfig(current => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  const handleExport = () => {
+    const headers = ['Intervention ID', 'Date', 'Client', 'Emissions Abated', 'Modality', 'Geography', 'Status'];
+    const csvContent = [
+      headers.join(','),
+      ...processedData.map(row => [
+        row.interventionId,
+        row.date,
+        row.clientName,
+        row.emissionsAbated,
+        row.modality,
+        row.geography,
+        row.status
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `intervention_report_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const StatCard: React.FC<{
+    title: string;
+    value: string | number;
+    icon: React.ReactNode;
+    trend?: { value: number; positive: boolean };
+  }> = ({ title, value, icon, trend }) => (
+    <div className="bg-white/25 backdrop-blur-md rounded-lg p-6 border border-white/20">
+      <div className="flex justify-between items-start">
+        <div>
+          <h3 className="text-sm font-medium text-[#103D5E]/70">{title}</h3>
+          <p className="mt-2 text-3xl font-bold text-[#103D5E]">{value}</p>
+          {trend && (
+            <p className={`mt-2 text-sm flex items-center gap-1 ${
+              trend.positive ? 'text-green-600' : 'text-red-600'
+            }`}>
+              {trend.positive ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
+              {trend.value}%
+            </p>
+          )}
+        </div>
+        <div className="p-3 bg-white/30 rounded-lg">
+          {icon}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
+      <div className="flex min-h-[calc(100vh-4rem)]">
+        <Sidebar />
+        <div className="flex-1 p-8">
+          <div className="max-w-7xl mx-auto space-y-6">
+            {/* Header */}
+            <div className="flex justify-between items-center">
+              <div>
+                <h1 className="text-2xl font-bold text-[#103D5E]">Intervention Reports</h1>
+                <p className="text-[#103D5E]/70 mt-1">
+                  Analyzing {processedData.length} interventions
+                </p>
+              </div>
+              <div className="flex gap-4">
                 <button
-                  onClick={() => setSelectedView('monthly')}
-                  className={`px-3 py-1 rounded-lg text-sm ${
-                    selectedView === 'monthly'
-                      ? 'bg-[#103D5E] text-white'
-                      : 'bg-white/30 text-[#103D5E]'
-                  }`}
+                  onClick={() => setShowFilters(!showFilters)}
+                  className="flex items-center gap-2 px-4 py-2 bg-white/25 backdrop-blur-md rounded-lg 
+                    border border-white/20 text-[#103D5E] hover:bg-white/30 transition-all"
                 >
-                  Monthly
+                  <SlidersHorizontal className="h-4 w-4" />
+                  Filters
                 </button>
                 <button
-                  onClick={() => setSelectedView('cumulative')}
-                  className={`px-3 py-1 rounded-lg text-sm ${
-                    selectedView === 'cumulative'
-                      ? 'bg-[#103D5E] text-white'
-                      : 'bg-white/30 text-[#103D5E]'
-                  }`}
+                  onClick={handleExport}
+                  className="flex items-center gap-2 px-4 py-2 bg-[#103D5E] text-white rounded-lg 
+                    hover:bg-[#103D5E]/90 transition-all"
                 >
-                  Cumulative
+                  <Download className="h-4 w-4" />
+                  Export Data
                 </button>
               </div>
             </div>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                {selectedView === 'monthly' ? (
-                  <BarChart data={monthlyChartData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#103D5E20" />
-                    <XAxis dataKey="month" stroke="#103D5E" />
-                    <YAxis stroke="#103D5E" />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                        border: 'none',
-                        borderRadius: '8px',
-                        boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
-                      }}
-                    />
-                    <Bar dataKey="emissions" fill="#103D5E" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                ) : (
-                  <LineChart data={cumulativeData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#103D5E20" />
-                    <XAxis dataKey="month" stroke="#103D5E" />
-                    <YAxis stroke="#103D5E" />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                        border: 'none',
-                        borderRadius: '8px',
-                        boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
-                      }}
-                    />
-                    <Line type="monotone" dataKey="totalEmissions" stroke="#103D5E" strokeWidth={2} />
-                  </LineChart>
-                )}
-              </ResponsiveContainer>
-            </div>
-          </div>
 
-          {/* Modality Breakdown */}
-          <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
-            <h2 className="text-lg font-semibold text-[#103D5E] mb-4">Emissions by Modality</h2>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={Object.entries(
-                    filteredInterventions.reduce((acc, intervention) => {
-                      if (!acc[intervention.modality]) acc[intervention.modality] = 0;
-                      acc[intervention.modality] += intervention.emissionsAbated;
-                      return acc;
-                    }, {})
-                  ).map(([modality, value]) => ({ modality, value }))}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#103D5E20" />
-                  <XAxis dataKey="modality" stroke="#103D5E" />
-                  <YAxis stroke="#103D5E" />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                      border: 'none',
-                      borderRadius: '8px',
-                      boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
-                    }}
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <StatCard
+                title="Total Emissions Abated"
+                value={`${stats.totalEmissions.toFixed(1)} tCO2e`}
+                icon={<BarChartIcon className="h-6 w-6 text-[#103D5E]" />}
+                trend={{ value: 12.5, positive: true }}
+              />
+              <StatCard
+                title="Total Interventions"
+                value={stats.totalInterventions}
+                icon={<PieChartIcon className="h-6 w-6 text-[#103D5E]" />}
+                trend={{ value: 8.3, positive: true }}
+              />
+              <StatCard
+                title="Average Reduction"
+                value={`${stats.averageEmission.toFixed(1)} tCO2e`}
+                icon={<BarChartIcon className="h-6 w-6 text-[#103D5E]" />}
+              />
+              <StatCard
+                title="Active Modalities"
+                value={chartData.modality.length}
+                icon={<Ship className="h-6 w-6 text-[#103D5E]" />}
+              />
+            </div>
+            {/* Charts Section */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Modality Distribution */}
+              <div className="bg-white/25 backdrop-blur-md rounded-lg p-6 border border-white/20">
+                <h3 className="text-lg font-semibold text-[#103D5E] mb-4">Distribution by Modality</h3>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={chartData.modality}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={80}
+                        paddingAngle={5}
+                        dataKey="value"
+                        label={({ name, percent }) => `${name} (${(percent * 100).toFixed(1)}%)`}
+                      >
+                        {chartData.modality.map((entry, index) => (
+                          <Cell 
+                            key={`cell-${index}`}
+                            fill={CHART_COLORS.primary[index % CHART_COLORS.primary.length]}
+                          />
+                        ))}
+                      </Pie>
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Emissions Timeline */}
+              <div className="bg-white/25 backdrop-blur-md rounded-lg p-6 border border-white/20">
+                <h3 className="text-lg font-semibold text-[#103D5E] mb-4">Emissions Timeline</h3>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={chartData.timeline}>
+                      <defs>
+                        <linearGradient id="colorEmissions" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#103D5E" stopOpacity={0.8}/>
+                          <stop offset="95%" stopColor="#103D5E" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#103D5E20" />
+                      <XAxis 
+                        dataKey="date" 
+                        tick={{ fill: '#103D5E' }}
+                        tickFormatter={(value) => new Date(value).toLocaleDateString()}
+                      />
+                      <YAxis tick={{ fill: '#103D5E' }} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Area
+                        type="monotone"
+                        dataKey="emissions"
+                        stroke="#103D5E"
+                        fillOpacity={1}
+                        fill="url(#colorEmissions)"
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+
+            {/* Filters Bar */}
+            <div className="flex flex-wrap gap-4 items-center bg-white/25 backdrop-blur-md rounded-lg p-4 border border-white/20">
+              <div className="flex-1 min-w-[200px]">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-[#103D5E]/40" />
+                  <input
+                    type="text"
+                    placeholder="Search interventions..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 bg-white/50 border border-white/20 rounded-lg 
+                      focus:outline-none focus:ring-1 focus:ring-[#103D5E] text-[#103D5E]"
                   />
-                  <Bar dataKey="value" fill="#B9D9DF" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
+                </div>
+              </div>
 
-        {/* Detailed Intervention List */}
-        <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
-          <div className="flex flex-wrap gap-4 items-center mb-6">
-            <div className="flex-1 min-w-[200px]">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-[#103D5E]/40" />
-                <input
-                  type="text"
-                  placeholder="Search interventions..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-white/50 border border-white/20 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#103D5E] text-[#103D5E]"
-                />
+              <div className="flex gap-2">
+                {[
+                  { value: 'all', label: 'All', icon: Filter },
+                  { value: 'Marine', label: 'Marine', icon: Ship },
+                  { value: 'Road', label: 'Road', icon: Truck },
+                  { value: 'Air', label: 'Air', icon: Plane },
+                  { value: 'Rail', label: 'Rail', icon: Train }
+                ].map(({ value, label, icon: Icon }) => (
+                  <button
+                    key={value}
+                    onClick={() => setFilters(prev => ({ ...prev, modality: value }))}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-300 ${
+                      filters.modality === value
+                        ? 'bg-[#103D5E] text-white'
+                        : 'bg-white/50 text-[#103D5E] hover:bg-white/70'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span>{label}</span>
+                  </button>
+                ))}
               </div>
             </div>
-            <div className="flex gap-2">
-              {['all', 'Maritime', 'Road', 'Air', 'Rail'].map((modality) => (
-                <button
-                  key={modality}
-                  onClick={() => setSelectedModality(modality)}
-                  className={`px-4 py-2 rounded-lg text-sm ${
-                    selectedModality === modality
-                      ? 'bg-[#103D5E] text-white'
-                      : 'bg-white/50 text-[#103D5E] hover:bg-white/70'
-                  }`}
-                >
-                  {modality}
-                </button>
-              ))}
-            </div>
-          </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-white/20">
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-[#103D5E]">ID</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-[#103D5E]">Date</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-[#103D5E]">Modality</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-[#103D5E]">Geography</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-[#103D5E]">Emissions</th>
-                  <th className="px-4 py-3 text-left text-sm font-semibold text-[#103D5E]">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredInterventions.map((intervention, index) => (
-                  <tr
-                    key={intervention.interventionId}
-                    className="border-b border-white/10 hover:bg-white/10"
-                  >
-                    <td className="px-4 py-3 text-sm text-[#103D5E]">{intervention.interventionId}</td>
-                    <td className="px-4 py-3 text-sm text-[#103D5E]">{intervention.date}</td>
-                    <td className="px-4 py-3 text-sm text-[#103D5E]">{intervention.modality}</td>
-                    <td className="px-4 py-3 text-sm text-[#103D5E]">{intervention.geography}</td>
-                    <td className="px-4 py-3 text-sm text-[#103D5E]">
-                      {intervention.emissionsAbated.toFixed(1)} tCO2e
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
-                        Verified
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {/* Data Table */}
+            <div className="bg-white/25 backdrop-blur-md rounded-lg shadow-lg border border-white/20 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-white/20">
+                  <thead>
+                    <tr className="bg-white/10">
+                      {[
+                        { key: 'interventionId', label: 'ID' },
+                        { key: 'date', label: 'Date' },
+                        { key: 'clientName', label: 'Client' },
+                        { key: 'emissionsAbated', label: 'Emissions Abated' },
+                        { key: 'modality', label: 'Modality' },
+                        { key: 'geography', label: 'Geography' },
+                        { key: 'status', label: 'Status' }
+                      ].map(({ key, label }) => (
+                        <th
+                          key={key}
+                          onClick={() => handleSort(key)}
+                          className="px-6 py-3 text-left text-xs font-medium text-[#103D5E] uppercase tracking-wider cursor-pointer hover:bg-white/20"
+                        >
+                          <div className="flex items-center space-x-1">
+                            <span>{label}</span>
+                            <div className="flex flex-col">
+                              <ChevronUp className={`h-3 w-3 ${
+                                sortConfig.key === key && sortConfig.direction === 'asc' ? 'text-[#103D5E]' : 'text-[#103D5E]/30'
+                              }`} />
+                              <ChevronDown className={`h-3 w-3 ${
+                                sortConfig.key === key && sortConfig.direction === 'desc' ? 'text-[#103D5E]' : 'text-[#103D5E]/30'
+                              }`} />
+                            </div>
+                          </div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white/10 divide-y divide-white/20">
+                    {processedData.map((row) => (
+                      <tr key={row.interventionId} className="hover:bg-white/20">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-[#103D5E]">
+                          {row.interventionId}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-[#103D5E]">
+                          {new Date(row.date).toLocaleDateString()}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-[#103D5E]">
+                          {row.clientName}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-[#103D5E]">
+                          {row.emissionsAbated.toFixed(1)} tCO2e
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-[#103D5E]">
+                          {row.modality}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-[#103D5E]">
+                          {row.geography}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                            row.status === 'Verified' 
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-yellow-100 text-yellow-800'
+                          }`}>
+                            {row.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Empty State */}
+            {processedData.length === 0 && (
+              <div className="text-center py-8 text-[#103D5E]/70">
+                No matching interventions found
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -259,21 +519,4 @@ const AnalyticsPage = ({ interventionData = [] }) => {
   );
 };
 
-const StatsCard = ({ title, value, trend, positive }) => (
-  <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 border border-white/20">
-    <h3 className="text-sm font-medium text-[#103D5E]/60">{title}</h3>
-    <div className="mt-2 flex items-baseline gap-2">
-      <span className="text-2xl font-bold text-[#103D5E]">{value}</span>
-      {trend && (
-        <span className={`flex items-center text-sm ${
-          positive ? 'text-green-500' : trend === 'Active' ? 'text-amber-500' : 'text-[#103D5E]/60'
-        }`}>
-          {positive ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
-          {trend}
-        </span>
-      )}
-    </div>
-  </div>
-);
-
-export default AnalyticsPage;
+export default ReportingPage;

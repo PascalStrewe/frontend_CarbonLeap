@@ -5,9 +5,9 @@ import Dashboard from './components/carbon-dashboard';
 import InterventionRequest from './components/intervention-request';
 import ReportingPage from './components/reporting-page';
 import AdminUpload from './components/admin-upload';
+import AnalyticsPage from './components/analytics-page';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { InterventionProvider } from './context/InterventionContext';
-
 
 const ProtectedRoute = ({ children }) => {
   const { user, isLoading } = useAuth();
@@ -80,9 +80,7 @@ function AppRoutes() {
       } />
       <Route path="/analytics" element={
         <ProtectedRoute>
-          <div className="min-h-screen bg-[#FFF2EC] p-8">
-            <h1 className="text-2xl font-bold text-[#103D5E]">Analytics Coming Soon</h1>
-          </div>
+          <AnalyticsPage />
         </ProtectedRoute>
       } />
       <Route path="/pending" element={

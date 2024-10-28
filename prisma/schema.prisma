@@ -1,4 +1,5 @@
 // prisma/schema.prisma
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -9,42 +10,64 @@ generator client {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  password  String
-  isAdmin   Boolean  @default(false)
-  domain    Domain   @relation(fields: [domainId], references: [id])
-  domainId  Int
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                  Int                  @id @default(autoincrement())
+  email               String               @unique
+  password            String
+  isAdmin             Boolean              @default(false)
+  domain              Domain               @relation(fields: [domainId], references: [id])
+  domainId            Int
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  interventionRequests InterventionRequest[] // Add this relation
 }
 
 model Domain {
-  id          Int           @id @default(autoincrement())
-  name        String        @unique // e.g. "@postnl.nl"
-  companyName String
-  users       User[]
+  id            Int            @id @default(autoincrement())
+  name          String         @unique // e.g. "@postnl.nl"
+  companyName   String
+  users         User[]
   interventions Intervention[]
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 model Intervention {
-  id              Int      @id @default(autoincrement())
-  clientName      String
-  emissionsAbated Float
-  date            DateTime
-  interventionId  String
-  modality        String?
-  geography       String?
-  additionality   Boolean  @default(false)
-  causality       Boolean  @default(false)
-  status          String   @default("Verified")
-  domain          Domain   @relation(fields: [domainId], references: [id])
-  domainId        Int
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id        Int      @id @default(autoincrement())
+  domain    Domain   @relation(fields: [domainId], references: [id])
+  domainId  Int
+  // Add other intervention fields as needed
+}
 
-  @@index([domainId])
-  @@index([date])
+model InterventionRequest {
+  id                      String    @id @default(cuid())
+  userId                  Int       // Changed from String to Int to match User model
+  companyDomain          String
+  intervention           String
+  modality               String
+  vesselType            String?
+  geography             String
+  lowCarbonFuelLiters    String?
+  lowCarbonFuelMT       String?
+  scope3EmissionsAbated  String?
+  ghgEmissionSaving      String
+  vintage                String
+  lowCarbonFuel         String
+  feedstock              String
+  causality              String
+  additionality          String
+  thirdPartyVerification String
+  certificationScheme    String
+  otherCertificationScheme String?
+  standards              String
+  status                 String
+  notificationSent       Boolean    @default(false)
+  submissionDate         DateTime   @default(now())
+  reviewedAt            DateTime?
+  reviewedBy            String?
+  comments              String?
+  
+  user                  User       @relation(fields: [userId], references: [id])
+
+  @@index([status])
+  @@index([companyDomain])
 }
