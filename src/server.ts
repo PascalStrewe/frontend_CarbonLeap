@@ -1,13 +1,10 @@
-// src/server.ts
-
 import { Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import express from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import nodemailer from 'nodemailer';
-import type { Transporter } from 'nodemailer';
+import { emailService } from './emailService';
 
 // Type definitions
 interface AuthRequest extends Request {
@@ -28,25 +25,14 @@ interface JWTPayload {
   domain: string;
 }
 
-interface EmailConfig {
-  host: string;
-  port: number;
-  secure: boolean;
-  auth: {
-    user: string;
-    pass: string;
-  };
-}
-
 // Environment variable validation
 const requiredEnvVars = [
   'DATABASE_URL',
   'JWT_SECRET',
-  'SMTP_HOST',
-  'SMTP_PORT',
-  'SMTP_USER',
-  'SMTP_PASSWORD',
-  'SMTP_FROM'
+  'MS_CLIENT_ID',
+  'MS_CLIENT_SECRET',
+  'MS_TENANT_ID',
+  'SMTP_USER'
 ];
 
 for (const envVar of requiredEnvVars) {
@@ -72,25 +58,20 @@ prisma.$on('query', (e) => {
   }
 });
 
-// Email configuration
-const emailConfig: EmailConfig = {
-  host: process.env.SMTP_HOST!,
-  port: parseInt(process.env.SMTP_PORT!, 10),
-  secure: process.env.SMTP_PORT === '465',
-  auth: {
-    user: process.env.SMTP_USER!,
-    pass: process.env.SMTP_PASSWORD!,
+// Email functions
+async function sendEmail(to: string, subject: string, html: string) {
+  try {
+    await emailService.sendEmail(to, subject, html);
+    console.log('Email sent successfully to:', to);
+  } catch (error) {
+    console.error('Error sending email:', error);
+    throw error;
   }
-};
+}
 
-// Initialize nodemailer transporter
-const transporter: Transporter = nodemailer.createTransport(emailConfig);
-
-// Verify email configuration
 async function verifyEmailConfig() {
   try {
-    await transporter.verify();
-    console.log('Email configuration verified successfully');
+    await emailService.verifyConfiguration();
   } catch (error) {
     console.error('Email configuration error:', error);
   }
@@ -145,7 +126,6 @@ const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunc
         });
       }
 
-      // Verify user still exists and has correct permissions
       const user = await prisma.user.findUnique({
         where: { id: (decoded as JWTPayload).id },
         include: { domain: true }
@@ -367,23 +347,41 @@ app.post('/api/intervention-requests', authenticateToken, async (req: AuthReques
     });
 
     try {
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM,
-        to: process.env.ADMIN_NOTIFICATION_EMAIL,
-        subject: 'New Intervention Request - CarbonBank',
-        html: `
-          <h2>New Intervention Request Received</h2>
-          <p>A new intervention request has been submitted with the following details:</p>
-          <ul>
-            <li><strong>Company:</strong> ${req.body.companyDomain}</li>
-            <li><strong>Modality:</strong> ${req.body.modality}</li>
-            <li><strong>Geography:</strong> ${req.body.geography}</li>
-            <li><strong>Low Carbon Fuel:</strong> ${req.body.lowCarbonFuel}</li>
-            <li><strong>Scope 3 Emissions Abated:</strong> ${req.body.scope3EmissionsAbated || 'Not provided'}</li>
-          </ul>
-          <p>Please log in to the admin dashboard to review this request.</p>
+      await sendEmail(
+        process.env.ADMIN_NOTIFICATION_EMAIL!,
+        'New Intervention Request - CarbonLeap',
         `
-      });
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #2C5282;">New Intervention Request Received</h2>
+          <p>A new intervention request has been submitted with the following details:</p>
+          <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Company:</strong></td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${req.body.companyDomain}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Modality:</strong></td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${req.body.modality}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Geography:</strong></td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${req.body.geography}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Low Carbon Fuel:</strong></td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${req.body.lowCarbonFuel}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Scope 3 Emissions Abated:</strong></td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${req.body.scope3EmissionsAbated || 'Not provided'}</td>
+            </tr>
+          </table>
+          <p style="margin-top: 20px;">Please log in to the admin dashboard to review this request.</p>
+          <p style="color: #666; font-size: 12px; margin-top: 30px;">This is an automated message from CarbonLeap.</p>
+        </div>
+        `
+      );
 
       await prisma.interventionRequest.update({
         where: { id: interventionRequest.id },
@@ -436,6 +434,83 @@ app.get('/api/admin/intervention-requests', authenticateToken, async (req: AuthR
     res.json({
       success: true,
       data: requests
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Update intervention request status
+app.patch('/api/admin/intervention-requests/:id', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user?.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const { id } = req.params;
+    const { status, adminNotes } = req.body;
+
+    const updatedRequest = await prisma.interventionRequest.update({
+      where: { id: parseInt(id) },
+      data: {
+        status,
+        adminNotes,
+        reviewDate: new Date()
+      },
+      include: {
+        user: true
+      }
+    });
+
+    // Send email notification to user about status update
+    try {
+      const statusMessages = {
+        approved: 'Your intervention request has been approved',
+        rejected: 'Your intervention request has been rejected',
+        pending_review: 'Your intervention request is under review',
+        more_info_needed: 'Additional information is needed for your intervention request'
+      };
+
+      const statusMessage = statusMessages[status as keyof typeof statusMessages] || 'Your intervention request status has been updated';
+
+      await sendEmail(
+        updatedRequest.user.email,
+        `Intervention Request Status Update - CarbonLeap`,
+        `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #2C5282;">Intervention Request Status Update</h2>
+          <p>Dear ${updatedRequest.user.email},</p>
+          <p>${statusMessage}.</p>
+          ${adminNotes ? `<p><strong>Admin Notes:</strong> ${adminNotes}</p>` : ''}
+          <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Request ID:</strong></td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${id}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Status:</strong></td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${status}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Update Date:</strong></td>
+              <td style="padding: 8px; border-bottom: 1px solid #eee;">${new Date().toLocaleDateString()}</td>
+            </tr>
+          </table>
+          <p>Please log in to your dashboard to view the complete details of your request.</p>
+          <p style="color: #666; font-size: 12px; margin-top: 30px;">This is an automated message from CarbonLeap.</p>
+        </div>
+        `
+      );
+    } catch (emailError) {
+      console.error('Failed to send status update email:', emailError);
+    }
+
+    res.json({
+      success: true,
+      data: updatedRequest
     });
   } catch (error) {
     next(error);
