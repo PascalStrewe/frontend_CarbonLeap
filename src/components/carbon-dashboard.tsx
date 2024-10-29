@@ -67,6 +67,8 @@ const Dashboard: React.FC = () => {
         intervention.clientName === user?.name
       );
 
+  console.log('Filtered Intervention Data:', filteredInterventionData);
+
   const handleLogout = async () => {
     await logout();
     navigate('/login');
@@ -78,8 +80,22 @@ const Dashboard: React.FC = () => {
   );
   const totalInterventions = filteredInterventionData.length;
   const pendingRequests = filteredInterventionData.filter(
-    intervention => intervention.status === 'Pending'
+    intervention => {
+      console.log('Checking intervention status:', intervention.status);
+      return intervention.status?.toLowerCase() === 'pending_review';
+    }
   ).length;
+
+  const verifiedRequests = filteredInterventionData.filter(
+    intervention => intervention.status?.toLowerCase() === 'verified'
+  ).length;
+
+  console.log('Pending Requests Count:', pendingRequests);
+
+  // Sort interventions by date for recent activity
+  const sortedInterventions = [...filteredInterventionData].sort((a, b) => 
+    new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
   
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
@@ -138,7 +154,7 @@ const Dashboard: React.FC = () => {
               <MetricCard 
                 icon={<TrendingUp className="h-6 w-6 text-[#103D5E]" />}
                 title="Verified Projects" 
-                value={totalInterventions - pendingRequests}
+                value={verifiedRequests}
                 unit="total"
                 trend={`+${totalInterventions} this month`}
                 positive={true}
@@ -155,15 +171,15 @@ const Dashboard: React.FC = () => {
                 Recent Activity
               </h2>
               <div className="space-y-4">
-                {filteredInterventionData.slice(-3).map((intervention, index) => (
-                  <ActivityItem 
-                    key={intervention.interventionId}
-                    title={`${intervention.modality} Intervention ${intervention.interventionId}`}
-                    description={`${intervention.emissionsAbated.toFixed(1)} tCO2e reduced in ${intervention.geography}`}
-                    time={new Date(intervention.date).toLocaleDateString()}
-                    status={intervention.status?.toLowerCase() || 'success'}
-                  />
-                ))}
+                {sortedInterventions.slice(0, 3).map((intervention, index) => (
+                    <ActivityItem 
+                      key={intervention.interventionId}
+                      title={`${intervention.modality} Intervention ${intervention.interventionId}`}
+                      description={`${intervention.emissionsAbated.toFixed(1)} tCO2e reduced in ${intervention.geography}`}
+                      time={intervention.date}
+                      status={intervention.status?.toLowerCase() === 'pending' ? 'pending' : 'success'}
+                    />
+                  ))}
                 {filteredInterventionData.length === 0 && (
                   <p className="text-center text-[#103D5E]/70">No recent activity</p>
                 )}

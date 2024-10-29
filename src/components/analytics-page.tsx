@@ -118,38 +118,43 @@ const ReportingPage: React.FC = () => {
   const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
 
   const processedData = useMemo(() => {
-    return interventionData
-      .filter(item => {
-        const searchLower = searchTerm.toLowerCase();
-        const matchesSearch = !searchTerm || 
-          item.clientName.toLowerCase().includes(searchLower) ||
-          item.interventionId.toLowerCase().includes(searchLower) ||
-          item.geography.toLowerCase().includes(searchLower);
-
-        const matchesModality = filters.modality === 'all' || item.modality === filters.modality;
-        const matchesGeography = filters.geography === 'all' || item.geography === filters.geography;
-
-        const itemDate = new Date(item.date);
-        const matchesDateRange = 
-          (!filters.dateRange.start || itemDate >= new Date(filters.dateRange.start)) &&
-          (!filters.dateRange.end || itemDate <= new Date(filters.dateRange.end));
-
-        return matchesSearch && matchesModality && matchesGeography && matchesDateRange;
-      })
-      .sort((a, b) => {
-        const aValue = a[sortConfig.key as keyof typeof a];
-        const bValue = b[sortConfig.key as keyof typeof b];
-        
-        if (typeof aValue === 'string' && typeof bValue === 'string') {
-          return sortConfig.direction === 'asc' 
-            ? aValue.localeCompare(bValue)
-            : bValue.localeCompare(aValue);
-        }
-        
-        return sortConfig.direction === 'asc'
-          ? (aValue as number) - (bValue as number)
-          : (bValue as number) - (aValue as number);
-      });
+    // First filter for verified interventions only
+    const verifiedData = interventionData.filter(item => 
+      item.status?.toLowerCase() === 'verified'
+    );
+  
+    // Then apply the rest of the filters
+    return verifiedData.filter(item => {
+      const searchLower = searchTerm.toLowerCase();
+      const matchesSearch = !searchTerm || 
+        item.clientName.toLowerCase().includes(searchLower) ||
+        item.interventionId.toLowerCase().includes(searchLower) ||
+        item.geography.toLowerCase().includes(searchLower);
+  
+      const matchesModality = filters.modality === 'all' || item.modality === filters.modality;
+      const matchesGeography = filters.geography === 'all' || item.geography === filters.geography;
+  
+      const itemDate = new Date(item.date);
+      const matchesDateRange = 
+        (!filters.dateRange.start || itemDate >= new Date(filters.dateRange.start)) &&
+        (!filters.dateRange.end || itemDate <= new Date(filters.dateRange.end));
+  
+      return matchesSearch && matchesModality && matchesGeography && matchesDateRange;
+    })
+    .sort((a, b) => {
+      const aValue = a[sortConfig.key as keyof typeof a];
+      const bValue = b[sortConfig.key as keyof typeof b];
+      
+      if (typeof aValue === 'string' && typeof bValue === 'string') {
+        return sortConfig.direction === 'asc' 
+          ? aValue.localeCompare(bValue)
+          : bValue.localeCompare(aValue);
+      }
+      
+      return sortConfig.direction === 'asc'
+        ? (aValue as number) - (bValue as number)
+        : (bValue as number) - (aValue as number);
+    });
   }, [interventionData, searchTerm, filters, sortConfig]);
 
   const chartData = useMemo(() => {
@@ -197,7 +202,7 @@ const ReportingPage: React.FC = () => {
 
   const stats = useMemo(() => ({
     totalEmissions: processedData.reduce((sum, item) => sum + item.emissionsAbated, 0),
-    totalInterventions: processedData.length,
+    totalInterventions: processedData.length, // This will now only count verified interventions
     averageEmission: processedData.length 
       ? processedData.reduce((sum, item) => sum + item.emissionsAbated, 0) / processedData.length 
       : 0,
@@ -313,7 +318,7 @@ const ReportingPage: React.FC = () => {
                 trend={{ value: 12.5, positive: true }}
               />
               <StatCard
-                title="Total Interventions"
+                title="Verified Interventions"
                 value={stats.totalInterventions}
                 icon={<PieChartIcon className="h-6 w-6 text-[#103D5E]" />}
                 trend={{ value: 8.3, positive: true }}
@@ -492,11 +497,13 @@ const ReportingPage: React.FC = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                            row.status === 'Verified' 
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-yellow-100 text-yellow-800'
+                            row.status?.toLowerCase() === 'verified'
+                            ? 'bg-green-100 text-green-800'
+                            : row.status?.toLowerCase().includes('pending') || row.status?.toLowerCase() === 'pending_review'
+                              ? 'bg-yellow-100 text-yellow-800'
+                              : 'bg-gray-100 text-gray-800'
                           }`}>
-                            {row.status}
+                            {row.status || 'Unknown'}
                           </span>
                         </td>
                       </tr>

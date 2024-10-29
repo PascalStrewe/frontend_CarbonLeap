@@ -26,7 +26,6 @@ interface FilterState {
   };
   modality: string;
   geography: string;
-  status: string;
   additionality: string;
   causality: string;
 }
@@ -53,7 +52,13 @@ const ReportingPage: React.FC = () => {
   const [showFilters, setShowFilters] = useState(false);
 
   const processedData = useMemo(() => {
-    return interventionData
+    // First filter for verified interventions only
+    const verifiedOnly = interventionData.filter(item => 
+      item.status?.toLowerCase() === 'verified'
+    );
+  
+    // Then apply the rest of the filters
+    return verifiedOnly
       .filter(item => {
         const searchLower = searchTerm.toLowerCase();
         const matchesSearch = !searchTerm || 
@@ -63,7 +68,12 @@ const ReportingPage: React.FC = () => {
 
         const matchesModality = filters.modality === 'all' || item.modality === filters.modality;
         const matchesGeography = filters.geography === 'all' || item.geography === filters.geography;
-        const matchesStatus = filters.status === 'all' || item.status === filters.status;
+        const matchesStatus = filters.status === 'all' || 
+          (filters.status === 'pending_review' && 
+            (item.status?.toLowerCase().includes('pending') || 
+            item.status?.toLowerCase() === 'pending_review')) ||
+          (filters.status === 'verified' && 
+            item.status?.toLowerCase() === 'verified');
         const matchesAdditionality = filters.additionality === 'all' || 
           (filters.additionality === 'yes' ? item.additionality : !item.additionality);
         const matchesCausality = filters.causality === 'all' || 
@@ -97,8 +107,6 @@ const ReportingPage: React.FC = () => {
   const stats = useMemo(() => ({
     totalEmissions: processedData.reduce((sum, item) => sum + item.emissionsAbated, 0),
     totalInterventions: processedData.length,
-    verifiedInterventions: processedData.filter(item => item.status === 'Verified').length,
-    pendingInterventions: processedData.filter(item => item.status === 'Pending').length
   }), [processedData]);
 
   const handleSort = (key: string) => {
@@ -205,20 +213,6 @@ const ReportingPage: React.FC = () => {
           </select>
         </div>
 
-        {/* Status Filter */}
-        <div>
-          <label className="block text-sm font-medium text-[#103D5E] mb-2">Status</label>
-          <select
-            value={filters.status}
-            onChange={(e) => setFilters(prev => ({ ...prev, status: e.target.value }))}
-            className="w-full px-3 py-2 bg-white/50 border border-white/20 rounded-lg"
-          >
-            <option value="all">All Statuses</option>
-            <option value="Verified">Verified</option>
-            <option value="Pending">Pending</option>
-          </select>
-        </div>
-
         {/* Additionality Filter */}
         <div>
           <label className="block text-sm font-medium text-[#103D5E] mb-2">Additionality</label>
@@ -254,7 +248,6 @@ const ReportingPage: React.FC = () => {
               dateRange: { start: '', end: '' },
               modality: 'all',
               geography: 'all',
-              status: 'all',
               additionality: 'all',
               causality: 'all'
             })}
@@ -302,7 +295,7 @@ const ReportingPage: React.FC = () => {
             </div>
 
             {/* Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <StatCard
                 title="Total Emissions Abated"
                 value={`${stats.totalEmissions.toFixed(1)} tCO2e`}
@@ -313,16 +306,11 @@ const ReportingPage: React.FC = () => {
                 title="Total Interventions"
                 value={stats.totalInterventions}
                 icon={<BarChartIcon className="h-6 w-6 text-[#103D5E]" />}
-              />
-              <StatCard
-                title="Verified Interventions"
-                value={stats.verifiedInterventions}
-                icon={<BarChartIcon className="h-6 w-6 text-[#103D5E]" />}
                 trend={{ value: 8.3, positive: true }}
               />
               <StatCard
-                title="Pending Interventions"
-                value={stats.pendingInterventions}
+                title="Average Reduction"
+                value={`${(stats.totalEmissions / stats.totalInterventions).toFixed(1)} tCO2e`}
                 icon={<BarChartIcon className="h-6 w-6 text-[#103D5E]" />}
               />
             </div>
@@ -372,8 +360,9 @@ const ReportingPage: React.FC = () => {
 
             {/* Active Filters Display */}
             {(filters.dateRange.start || filters.dateRange.end || 
-              filters.geography !== 'all' || filters.status !== 'all' || 
-              filters.additionality !== 'all' || filters.causality !== 'all') && (
+              filters.geography !== 'all' || 
+              filters.additionality !== 'all' || 
+              filters.causality !== 'all') && (
               <div className="flex flex-wrap gap-2 bg-white/25 backdrop-blur-md rounded-lg p-4 border border-white/20">
                 {filters.dateRange.start && (
                   <div className="flex items-center gap-2 bg-white/50 px-3 py-1 rounded-full text-sm text-[#103D5E]">
@@ -408,17 +397,6 @@ const ReportingPage: React.FC = () => {
                     <span>Geography: {filters.geography}</span>
                     <button
                       onClick={() => setFilters(prev => ({ ...prev, geography: 'all' }))}
-                      className="hover:text-red-500"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
-                {filters.status !== 'all' && (
-                  <div className="flex items-center gap-2 bg-white/50 px-3 py-1 rounded-full text-sm text-[#103D5E]">
-                    <span>Status: {filters.status}</span>
-                    <button
-                      onClick={() => setFilters(prev => ({ ...prev, status: 'all' }))}
                       className="hover:text-red-500"
                     >
                       <X className="h-4 w-4" />
@@ -592,9 +570,11 @@ const ReportingPage: React.FC = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm">
                           <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                            row.status === 'Verified' 
+                            row.status?.toLowerCase() === 'verified'
                               ? 'bg-green-100 text-green-800'
-                              : 'bg-yellow-100 text-yellow-800'
+                              : row.status?.toLowerCase().includes('pending') || row.status?.toLowerCase() === 'pending_review'
+                                ? 'bg-yellow-100 text-yellow-800'
+                                : 'bg-gray-100 text-gray-800'
                           }`}>
                             {row.status}
                           </span>

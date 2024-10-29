@@ -18,12 +18,12 @@ model User {
   domainId            Int
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
-  interventionRequests InterventionRequest[] // Add this relation
+  interventionRequests InterventionRequest[]
 }
 
 model Domain {
   id            Int            @id @default(autoincrement())
-  name          String         @unique // e.g. "@postnl.nl"
+  name          String         @unique
   companyName   String
   users         User[]
   interventions Intervention[]
@@ -35,12 +35,11 @@ model Intervention {
   id        Int      @id @default(autoincrement())
   domain    Domain   @relation(fields: [domainId], references: [id])
   domainId  Int
-  // Add other intervention fields as needed
 }
 
 model InterventionRequest {
   id                      String    @id @default(cuid())
-  userId                  Int       // Changed from String to Int to match User model
+  userId                  Int       // Made required by removing the ? 
   companyDomain          String
   intervention           String
   modality               String

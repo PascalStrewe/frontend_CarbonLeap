@@ -1,8 +1,20 @@
+// src/components/intervention-request.tsx
+
 import React, { useState, useEffect } from "react";
-import { Check, AlertCircle, Calendar, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { Check, AlertCircle, Calendar, Loader2 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import Sidebar from './Sidebar';
+import { useInterventions } from "../context/InterventionContext";
+
+
+// Type Definitions
+type SubmissionStatusType = 'idle' | 'submitting' | 'success' | 'error';
+
+interface SubmissionStatus {
+  status: SubmissionStatusType;
+  message: string;
+}
 
 interface FormData {
   intervention: string;
@@ -24,15 +36,19 @@ interface FormData {
   standards: string;
 }
 
-interface SubmissionStatus {
-  status: 'idle' | 'submitting' | 'success' | 'error';
-  message: string;
+interface PendingRequest extends FormData {
+  id: string;
+  submissionDate: string;
+  status: string;
+  userId?: number;
+  companyDomain?: string;
 }
 
 const InterventionRequest = () => {
-  const router = useNavigate();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const currentYear = new Date().getFullYear();
+  const { refreshInterventions } = useInterventions();
   
   const [submissionStatus, setSubmissionStatus] = useState<SubmissionStatus>({
     status: 'idle',
@@ -59,17 +75,17 @@ const InterventionRequest = () => {
     standards: 'Book and Claim'
   });
 
-  const [pendingRequests, setPendingRequests] = useState([]);
+  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
   const [submitted, setSubmitted] = useState(false);
   const [showVesselType, setShowVesselType] = useState(false);
   const [showOtherCertification, setShowOtherCertification] = useState(false);
+
+  const ghgOptions = Array.from({ length: 96 }, (_, i) => (95 - i).toString());
 
   useEffect(() => {
     setShowVesselType(formData.modality === 'Marine');
     setShowOtherCertification(formData.certificationScheme === 'Other');
   }, [formData.modality, formData.certificationScheme]);
-
-  const ghgOptions = Array.from({ length: 96 }, (_, i) => 95 - i);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,39 +96,63 @@ const InterventionRequest = () => {
         message: 'Submitting your intervention request...'
       });
   
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+  
+      // Log the request for debugging
+      console.log('Submitting request...');
+  
       const requestData = {
         ...formData,
         userId: user?.id,
-        companyDomain: user?.companyDomain,
+        companyDomain: user?.domain,
         submissionDate: new Date().toISOString(),
-        status: 'pending_review'
+        status: 'pending', // This ensures new submissions are always pending
+        date: new Date().toLocaleDateString(),
+        emissionsAbated: parseFloat(formData.scope3EmissionsAbated) || 0,
+        interventionId: Math.random().toString(36).substr(2, 9),
+        clientName: user?.name,
+        verified: false // Add this field to explicitly track verification status
       };
-  
+
       console.log('Submitting request data:', requestData);
   
-      const response = await fetch('/api/intervention-requests', {
+      console.log('Request data:', requestData);
+  
+      const response = await fetch('http://localhost:3001/api/intervention-requests', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify(requestData),
+        body: JSON.stringify(requestData)
       });
   
+      console.log('Response status:', response.status);
+  
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Failed to submit request');
+        const errorText = await response.text();
+        console.error('Error response:', errorText);
+        throw new Error(errorText || 'Failed to submit request');
       }
   
       const result = await response.json();
       console.log('Success response:', result);
   
+      setPendingRequests(prev => [...prev, { 
+        ...requestData, 
+        id: result.requestId 
+      } as PendingRequest]);
+
+      // Refresh the intervention data
+      refreshInterventions();
+  
       setSubmissionStatus({
         status: 'success',
         message: 'Request submitted successfully'
       });
-  
-      setPendingRequests([...pendingRequests, { ...requestData, id: result.requestId }]);
       
       setTimeout(() => setSubmitted(true), 1500);
   
@@ -124,7 +164,7 @@ const InterventionRequest = () => {
       });
     }
   };
-
+  
   if (submitted) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
@@ -160,7 +200,7 @@ const InterventionRequest = () => {
 
                     <div className="space-x-4">
                       <button
-                        onClick={() => router.push('/dashboard')}
+                        onClick={() => navigate('/dashboard')}
                         className="bg-[#103D5E] text-white px-6 py-3 rounded-lg hover:bg-[#103D5E]/90 transition-all duration-300"
                       >
                         Go to Dashboard
@@ -202,7 +242,7 @@ const InterventionRequest = () => {
                 <div className="bg-white/25 backdrop-blur-md rounded-xl shadow-lg border border-white/20 p-8">
                   <h3 className="text-xl font-bold text-[#103D5E] mb-4">Recent Requests</h3>
                   <div className="space-y-4">
-                    {pendingRequests.map((request: any) => (
+                    {pendingRequests.map((request: PendingRequest) => (
                       <div
                         key={request.id}
                         className="bg-white/20 backdrop-blur-md rounded-lg p-4 border border-white/20"
@@ -232,6 +272,7 @@ const InterventionRequest = () => {
                   </div>
                 </div>
               )}
+
             </div>
           </div>
         </div>
@@ -252,234 +293,253 @@ const InterventionRequest = () => {
             
             <div className="bg-white/25 backdrop-blur-md rounded-xl shadow-lg border border-white/20 p-8">
               <form onSubmit={handleSubmit} className="space-y-6">
+                {/* Form fields section */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {/* Form fields remain the same */}
-                  {/* ... All the existing form fields ... */}
-                  {/* Copy all form fields from the original code here */}
+                  {/* Intervention Type */}
                   <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Intervention Type</label>
-                <input
-                  type="text"
-                  value={formData.intervention}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  readOnly
-                />
-              </div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Intervention Type</label>
+                    <input
+                      type="text"
+                      value={formData.intervention}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      readOnly
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Modality *</label>
-                <select
-                  value={formData.modality}
-                  onChange={(e) => setFormData({...formData, modality: e.target.value, vesselType: ''})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  required
-                >
-                  <option value="">Select modality...</option>
-                  <option value="Road">Road</option>
-                  <option value="Marine">Marine</option>
-                  <option value="Rail">Rail</option>
-                  <option value="Air">Air</option>
-                </select>
-              </div>
+                  {/* Modality */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Modality *</label>
+                    <select
+                      value={formData.modality}
+                      onChange={(e) => setFormData({...formData, modality: e.target.value, vesselType: ''})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      required
+                    >
+                      <option value="">Select modality...</option>
+                      <option value="Road">Road</option>
+                      <option value="Marine">Marine</option>
+                      <option value="Rail">Rail</option>
+                      <option value="Air">Air</option>
+                    </select>
+                  </div>
 
-              {showVesselType && (
-                <div>
-                  <label className="block text-sm font-medium text-[#103D5E] mb-1">Vessel Type</label>
-                  <input
-                    type="text"
-                    value={formData.vesselType}
-                    onChange={(e) => setFormData({...formData, vesselType: e.target.value})}
-                    className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  />
-                </div>
-              )}
+                  {/* Vessel Type (conditional) */}
+                  {showVesselType && (
+                    <div>
+                      <label className="block text-sm font-medium text-[#103D5E] mb-1">Vessel Type</label>
+                      <input
+                        type="text"
+                        value={formData.vesselType}
+                        onChange={(e) => setFormData({...formData, vesselType: e.target.value})}
+                        className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      />
+                    </div>
+                  )}
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Geography *</label>
-                <input
-                  type="text"
-                  value={formData.geography}
-                  onChange={(e) => setFormData({...formData, geography: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  required
-                />
-              </div>
+                  {/* Geography */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Geography *</label>
+                    <input
+                      type="text"
+                      value={formData.geography}
+                      onChange={(e) => setFormData({...formData, geography: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      required
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Low Carbon Fuel (L)</label>
-                <input
-                  type="number"
-                  value={formData.lowCarbonFuelLiters}
-                  onChange={(e) => setFormData({...formData, lowCarbonFuelLiters: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                />
-              </div>
+                  {/* Low Carbon Fuel Liters */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Low Carbon Fuel (L)</label>
+                    <input
+                      type="number"
+                      value={formData.lowCarbonFuelLiters}
+                      onChange={(e) => setFormData({...formData, lowCarbonFuelLiters: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Low Carbon Fuel (MT)</label>
-                <input
-                  type="number"
-                  value={formData.lowCarbonFuelMT}
-                  onChange={(e) => setFormData({...formData, lowCarbonFuelMT: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                />
-              </div>
+                  {/* Low Carbon Fuel MT */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Low Carbon Fuel (MT)</label>
+                    <input
+                      type="number"
+                      value={formData.lowCarbonFuelMT}
+                      onChange={(e) => setFormData({...formData, lowCarbonFuelMT: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Scope 3 Emissions Abated (tCO2)</label>
-                <input
-                  type="number"
-                  value={formData.scope3EmissionsAbated}
-                  onChange={(e) => setFormData({...formData, scope3EmissionsAbated: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                />
-              </div>
+                  {/* Scope 3 Emissions Abated */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Scope 3 Emissions Abated (tCO2)</label>
+                    <input
+                      type="number"
+                      value={formData.scope3EmissionsAbated}
+                      onChange={(e) => setFormData({...formData, scope3EmissionsAbated: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">GHG Emission Saving (%)</label>
-                <select
-                  value={formData.ghgEmissionSaving}
-                  onChange={(e) => setFormData({...formData, ghgEmissionSaving: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  required
-                >
-                  {ghgOptions.map((value) => (
-                    <option key={value} value={value}>{value}</option>
-                  ))}
-                </select>
-              </div>
+                  {/* GHG Emission Saving */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">GHG Emission Saving (%)</label>
+                    <select
+                      value={formData.ghgEmissionSaving}
+                      onChange={(e) => setFormData({...formData, ghgEmissionSaving: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      required
+                    >
+                      {ghgOptions.map((value) => (
+                        <option key={value} value={value}>{value}</option>
+                      ))}
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Low Carbon Fuel *</label>
-                <select
-                  value={formData.lowCarbonFuel}
-                  onChange={(e) => setFormData({...formData, lowCarbonFuel: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  required
-                >
-                  <option value="Biofuels">Biofuels</option>
-                  <option value="Bio-LNG">Bio-LNG</option>
-                  <option value="Ammonia">Ammonia</option>
-                  <option value="Bio-Methanol">Bio-Methanol</option>
-                  <option value="Bio-Ethanol">Bio-Ethanol</option>
-                  <option value="E-Fuels">E-Fuels</option>
-                  <option value="Biogas">Biogas</option>
-                  <option value="HVO100">HVO100</option>
-                </select>
-              </div>
+                  {/* Vintage */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Vintage (Year)</label>
+                    <input
+                      type="number"
+                      min="2000"
+                      max="2100"
+                      value={formData.vintage}
+                      onChange={(e) => setFormData({...formData, vintage: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      required
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Feedstock *</label>
-                <select
-                  value={formData.feedstock}
-                  onChange={(e) => setFormData({...formData, feedstock: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  required
-                >
-                  <option value="">Select feedstock...</option>
-                  <option value="Annex IX Part A or B">Annex IX Part A or B</option>
-                  <option value="Annex IX Part A or B, non-POME">Annex IX Part A or B, non-POME</option>
-                  <option value="Annex IX Part A or B, non-food">Annex IX Part A or B, non-food</option>
-                  <option value="n/a">n/a</option>
-                </select>
-              </div>
+                  {/* Low Carbon Fuel */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Low Carbon Fuel *</label>
+                    <select
+                      value={formData.lowCarbonFuel}
+                      onChange={(e) => setFormData({...formData, lowCarbonFuel: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      required
+                    >
+                      <option value="Biofuels">Biofuels</option>
+                      <option value="Bio-LNG">Bio-LNG</option>
+                      <option value="Ammonia">Ammonia</option>
+                      <option value="Bio-Methanol">Bio-Methanol</option>
+                      <option value="Bio-Ethanol">Bio-Ethanol</option>
+                      <option value="E-Fuels">E-Fuels</option>
+                      <option value="Biogas">Biogas</option>
+                      <option value="HVO100">HVO100</option>
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Additionality *</label>
-                <select
-                  value={formData.additionality}
-                  onChange={(e) => setFormData({...formData, additionality: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  required
-                >
-                  <option value="">Select...</option>
-                  <option value="Yes">Yes</option>
-                  <option value="No">No</option>
-                </select>
-              </div>
+                  {/* Feedstock */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Feedstock *</label>
+                    <select
+                      value={formData.feedstock}
+                      onChange={(e) => setFormData({...formData, feedstock: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      required
+                    >
+                      <option value="">Select feedstock...</option>
+                      <option value="Annex IX Part A or B">Annex IX Part A or B</option>
+                      <option value="Annex IX Part A or B, non-POME">Annex IX Part A or B, non-POME</option>
+                      <option value="Annex IX Part A or B, non-food">Annex IX Part A or B, non-food</option>
+                      <option value="n/a">n/a</option>
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Causality *</label>
-                <select
-                  value={formData.causality}
-                  onChange={(e) => setFormData({...formData, causality: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  required
-                >
-                  <option value="">Select...</option>
-                  <option value="Yes">Yes</option>
-                  <option value="No">No</option>
-                </select>
-              </div>
+                  {/* Causality */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Causality *</label>
+                    <select
+                      value={formData.causality}
+                      onChange={(e) => setFormData({...formData, causality: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      required
+                    >
+                      <option value="">Select...</option>
+                      <option value="Yes">Yes</option>
+                      <option value="No">No</option>
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Third Party Verification</label>
-                <input
-                  type="text"
-                  value={formData.thirdPartyVerification}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  readOnly
-                />
-              </div>
+                  {/* Additionality */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Additionality *</label>
+                    <select
+                      value={formData.additionality}
+                      onChange={(e) => setFormData({...formData, additionality: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      required
+                    >
+                      <option value="">Select...</option>
+                      <option value="Yes">Yes</option>
+                      <option value="No">No</option>
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Certification Scheme *</label>
-                <select
-                  value={formData.certificationScheme}
-                  onChange={(e) => setFormData({...formData, certificationScheme: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  required
-                >
-                  <option value="">Select scheme...</option>
-                  <option value="REDII">REDII</option>
-                  <option value="GLEC">GLEC</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
+                  {/* Third Party Verification */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Third Party Verification</label>
+                    <input
+                      type="text"
+                      value={formData.thirdPartyVerification}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      readOnly
+                    />
+                  </div>
 
-              {showOtherCertification && (
-                <div>
-                  <label className="block text-sm font-medium text-[#103D5E] mb-1">Specify Other Scheme *</label>
-                  <input
-                    type="text"
-                    value={formData.otherCertificationScheme}
-                    onChange={(e) => setFormData({...formData, otherCertificationScheme: e.target.value})}
-                    className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                    required={showOtherCertification}
-                  />
-                </div>
-              )}
+                  {/* Certification Scheme */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Certification Scheme *</label>
+                    <select
+                      value={formData.certificationScheme}
+                      onChange={(e) => setFormData({...formData, certificationScheme: e.target.value})}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      required
+                    >
+                      <option value="">Select scheme...</option>
+                      <option value="REDII">REDII</option>
+                      <option value="GLEC">GLEC</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Standards</label>
-                <input
-                  type="text"
-                  value={formData.standards}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  readOnly
-                />
-              </div>
+                  {/* Other Certification Scheme (conditional) */}
+                  {showOtherCertification && (
+                    <div>
+                      <label className="block text-sm font-medium text-[#103D5E] mb-1">Specify Other Scheme *</label>
+                      <input
+                        type="text"
+                        value={formData.otherCertificationScheme}
+                        onChange={(e) => setFormData({...formData, otherCertificationScheme: e.target.value})}
+                        className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                        required={showOtherCertification}
+                      />
+                    </div>
+                  )}
 
-              <div>
-                <label className="block text-sm font-medium text-[#103D5E] mb-1">Vintage (Year)</label>
-                <input
-                  type="number"
-                  min="2000"
-                  max="2100"
-                  value={formData.vintage}
-                  onChange={(e) => setFormData({...formData, vintage: e.target.value})}
-                  className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
-                  required
-                />
-              </div>
+                  {/* Standards */}
+                  <div>
+                    <label className="block text-sm font-medium text-[#103D5E] mb-1">Standards</label>
+                    <input
+                      type="text"
+                      value={formData.standards}
+                      className="block w-full rounded-lg border border-white/20 bg-white/10 backdrop-blur-md px-4 py-2.5 text-[#103D5E]"
+                      readOnly
+                    />
+                  </div>
                 </div>
 
                 <div className="mt-8">
                   <button
                     type="submit"
-                    className="w-full bg-[#103D5E] text-white py-3 rounded-lg hover:bg-[#103D5E]/90 transition-all duration-300 shadow-lg hover:shadow-xl"
+                    disabled={submissionStatus.status === 'submitting'}
+                    className="w-full bg-[#103D5E] text-white py-3 rounded-lg hover:bg-[#103D5E]/90 transition-all duration-300 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   >
-                    Submit Request
+                    {submissionStatus.status === 'submitting' && (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    )}
+                    {submissionStatus.status === 'submitting' ? 'Submitting...' : 'Submit Request'}
                   </button>
                 </div>
               </form>

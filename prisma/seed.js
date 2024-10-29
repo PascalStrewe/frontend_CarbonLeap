@@ -1,44 +1,46 @@
 // prisma/seed.js
-import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcryptjs';
 
+const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 async function main() {
-  try {
-    // Create initial domain
-    const adminDomain = await prisma.domain.upsert({
-      where: { name: '@admin' },
-      update: {},
-      create: {
-        name: '@admin',
-        companyName: 'CarbonLeap Admin'
-      }
-    });
+  // Create initial domain
+  const domain = await prisma.domain.create({
+    data: {
+      name: '@carbonleap.nl',
+      companyName: 'CarbonLeap',
+    },
+  });
 
-    // Create admin user
-    const hashedPassword = await bcrypt.hash('admin123', 10);
-    const admin = await prisma.user.upsert({
-      where: { email: 'admin@carbonleap.com' },
-      update: {},
-      create: {
-        email: 'admin@carbonleap.com',
-        password: hashedPassword,
-        isAdmin: true,
-        domainId: adminDomain.id
-      }
-    });
+  // Create admin user
+  const adminUser = await prisma.user.create({
+    data: {
+      email: process.env.ADMIN_EMAIL || 'admin@carbonleap.nl',
+      // In production, you should hash this password
+      password: 'CarbonLeap1!',
+      isAdmin: true,
+      domainId: domain.id,
+    },
+  });
 
-    console.log('Seed data created:', { admin, adminDomain });
-  } catch (error) {
-    console.error('Error during seeding:', error);
-    process.exit(1);
-  }
+  // Create some sample interventions
+  const intervention = await prisma.intervention.create({
+    data: {
+      domainId: domain.id,
+      // Add other intervention fields as needed
+    },
+  });
+
+  console.log('Seed data created:', {
+    domain: domain.name,
+    adminUser: adminUser.email,
+    intervention: intervention.id,
+  });
 }
 
 main()
   .catch((e) => {
-    console.error(e);
+    console.error('Error during seeding:', e);
     process.exit(1);
   })
   .finally(async () => {
