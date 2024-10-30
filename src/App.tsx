@@ -8,13 +8,16 @@ import AdminUpload from './components/admin-upload';
 import AnalyticsPage from './components/analytics-page';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { InterventionProvider } from './context/InterventionContext';
+import CarbonTransfer from './components/carbon-transfer';
+import PartnershipManagement from './components/partnership-management';
+import ChatWithData from './components/chat-with-data';
 
 const ProtectedRoute = ({ children }) => {
   const { user, isLoading } = useAuth();
   
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#FFF2EC] flex items-center justify-center">
+      <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
         <div className="text-[#103D5E]">Loading...</div>
       </div>
     );
@@ -32,7 +35,7 @@ const AdminRoute = ({ children }) => {
   
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#FFF2EC] flex items-center justify-center">
+      <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
         <div className="text-[#103D5E]">Loading...</div>
       </div>
     );
@@ -50,7 +53,7 @@ function AppRoutes() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#FFF2EC] flex items-center justify-center">
+      <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
         <div className="text-[#103D5E]">Loading...</div>
       </div>
     );
@@ -83,9 +86,24 @@ function AppRoutes() {
           <AnalyticsPage />
         </ProtectedRoute>
       } />
+      <Route path="/partnerships" element={
+        <ProtectedRoute>
+          <PartnershipManagement />
+        </ProtectedRoute>
+      } />
+      <Route path="/transfers" element={
+        <ProtectedRoute>
+          <CarbonTransfer />
+        </ProtectedRoute>
+      } />
+      <Route path="/chat-with-data" element={
+        <ProtectedRoute>
+          <ChatWithData />
+        </ProtectedRoute>
+      } />
       <Route path="/pending" element={
         <ProtectedRoute>
-          <div className="min-h-screen bg-[#FFF2EC] p-8">
+          <div className="min-h-screen bg-[#DAE9E6] p-8">
             <h1 className="text-2xl font-bold text-[#103D5E]">Pending Requests Coming Soon</h1>
           </div>
         </ProtectedRoute>
@@ -105,7 +123,7 @@ function AppRoutes() {
       
       {/* Catch all route */}
       <Route path="*" element={
-        <div className="min-h-screen bg-[#FFF2EC] flex items-center justify-center">
+        <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
           <div className="text-[#103D5E] text-xl">Page not found</div>
         </div>
       } />

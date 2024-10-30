@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { emailService } from './emailService';
 import 'dotenv/config';
+import { SecureSQLQueryService } from './services/SecureSQLQueryService';
 
 // Type definitions
 interface AuthRequest extends Request {
@@ -143,7 +144,7 @@ const authenticateToken = async (
   } catch (error) {
     next(error);
   }
-};
+});
 
 // Error handling middleware
 app.use(
@@ -176,29 +177,29 @@ app.get('/api/health', (_req: Request, res: Response) => {
   });
 });
 
-// Test email endpoint - ADD THIS NEW SECTION
+// Test email endpoint
 app.post('/api/test-email', async (_req: Request, res: Response) => {
   try {
     console.log('Testing email configuration...');
-    
+
     const result = await emailService.sendEmail(
       'Test Email - CarbonLeap',
       '<h1>This is a test email</h1><p>If you receive this, the email service is working correctly.</p>'
     );
 
     console.log('Email test result:', result);
-    
+
     res.json({
       success: true,
       message: 'Test email sent',
-      result
+      result,
     });
   } catch (error) {
     console.error('Test email failed:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to send test email',
-      error: error.message
+      error: (error as Error).message,
     });
   }
 });
@@ -336,6 +337,77 @@ app.get(
   }
 );
 
+// User routes
+app.post(
+  '/api/users',
+  authenticateToken,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user?.isAdmin) {
+        return res.status(403).json({
+          success: false,
+          message: 'Admin access required',
+        });
+      }
+
+      const { email, password, isAdmin, domainId } = req.body;
+
+      if (!email || !password || !domainId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email, password, and domainId are required',
+        });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      const user = await prisma.user.create({
+        data: {
+          email,
+          password: hashedPassword,
+          isAdmin: isAdmin || false,
+          domainId,
+        },
+      });
+
+      res.json({
+        success: true,
+        data: user,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+app.get(
+  '/api/users',
+  authenticateToken,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user?.isAdmin) {
+        return res.status(403).json({
+          success: false,
+          message: 'Admin access required',
+        });
+      }
+
+      const users = await prisma.user.findMany({
+        include: {
+          domain: true,
+        },
+      });
+
+      res.json({
+        success: true,
+        data: users,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 // Intervention routes
 app.post(
   '/api/intervention-requests',
@@ -347,14 +419,18 @@ app.post(
       const requiredFields = [
         'modality',
         'geography',
-        'lowCarbonFuel',
-        'feedstock',
         'additionality',
         'causality',
-        'certificationScheme',
+        'clientName',
+        'emissionsAbated',
+        'date',
+        'interventionId',
       ];
 
-      const missingFields = requiredFields.filter((field) => !req.body[field]);
+      const missingFields = requiredFields.filter(
+        (field) =>
+          req.body[field] === undefined || req.body[field] === null
+      );
 
       if (missingFields.length > 0) {
         return res.status(400).json({
@@ -363,86 +439,62 @@ app.post(
         });
       }
 
+      // Determine userId
+      let userId = req.user!.id; // Default to authenticated user
+
+      if (req.user!.isAdmin && (req.body.userId || req.body.domainId)) {
+        // Admin can specify userId or domainId
+        if (req.body.userId) {
+          userId = req.body.userId;
+        } else if (req.body.domainId) {
+          // Find a user in the specified domain
+          const domainUsers = await prisma.user.findMany({
+            where: { domainId: req.body.domainId },
+            select: { id: true },
+          });
+          if (domainUsers.length > 0) {
+            userId = domainUsers[0].id; // Use the first user in the domain
+          } else {
+            return res.status(400).json({
+              success: false,
+              message: 'No users found for the specified domainId',
+            });
+          }
+        }
+      } else if ((req.body.userId || req.body.domainId) && !req.user!.isAdmin) {
+        // Non-admins cannot specify userId or domainId
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied: Cannot specify userId or domainId',
+        });
+      }
+
+      // Prepare data for creation
+      const interventionRequestData = {
+        userId: userId,
+        clientName: req.body.clientName,
+        emissionsAbated: req.body.emissionsAbated,
+        date: new Date(req.body.date),
+        interventionId: req.body.interventionId,
+        modality: req.body.modality,
+        geography: req.body.geography,
+        additionality: req.body.additionality,
+        causality: req.body.causality,
+        status: req.body.status || 'Verified',
+        lowCarbonFuel: req.body.lowCarbonFuel || 'n/a',
+        feedstock: req.body.feedstock || 'n/a',
+        certificationScheme: req.body.certificationScheme || 'n/a',
+        // Include any other fields as necessary
+      };
+
       const interventionRequest = await prisma.interventionRequest.create({
-        data: {
-          userId: req.user.id,
-          companyDomain: req.body.companyDomain,
-          intervention: req.body.intervention,
-          modality: req.body.modality,
-          vesselType: req.body.vesselType,
-          geography: req.body.geography,
-          lowCarbonFuelLiters: req.body.lowCarbonFuelLiters,
-          lowCarbonFuelMT: req.body.lowCarbonFuelMT,
-          scope3EmissionsAbated: req.body.scope3EmissionsAbated,
-          ghgEmissionSaving: req.body.ghgEmissionSaving,
-          vintage: req.body.vintage,
-          lowCarbonFuel: req.body.lowCarbonFuel,
-          feedstock: req.body.feedstock,
-          causality: req.body.causality,
-          additionality: req.body.additionality,
-          thirdPartyVerification: req.body.thirdPartyVerification,
-          certificationScheme: req.body.certificationScheme,
-          otherCertificationScheme: req.body.otherCertificationScheme,
-          standards: req.body.standards,
-          status: 'pending_review',
-          notificationSent: false,
-        },
+        data: interventionRequestData,
       });
 
       console.log('Intervention request created:', interventionRequest);
 
       // Send email notification directly using the emailService
-      try {
-        console.log('Preparing to send email notification...');
-        const emailHtml = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #2C5282;">New Intervention Request Received</h2>
-            <p>A new intervention request has been submitted with the following details:</p>
-            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-              <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Company:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;">${req.body.companyDomain}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Modality:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;">${req.body.modality}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Geography:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;">${req.body.geography}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Low Carbon Fuel:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;">${req.body.lowCarbonFuel}</td>
-              </tr>
-            </table>
-            <p style="margin-top: 20px;">Please log in to the admin dashboard to review this request.</p>
-          </div>
-        `;
-
-        console.log('Email HTML prepared');
-
-        const emailResult = await emailService.sendEmail(
-          'New Intervention Request - CarbonLeap',
-          emailHtml
-        );
-
-        console.log('Email sending result:', emailResult);
-
-        if (emailResult) {
-          await prisma.interventionRequest.update({
-            where: { id: interventionRequest.id },
-            data: { notificationSent: true },
-          });
-          console.log('Notification status updated in database');
-        }
-      } catch (emailError) {
-        console.error('Detailed email error:', emailError);
-        console.error('Email error stack:', emailError.stack);
-        if (emailError.response) {
-          console.error('Graph API error response:', emailError.response.data);
-        }
-      }
+      // (Optional: Implement email notifications if needed)
 
       res.status(200).json({
         success: true,
@@ -462,13 +514,13 @@ app.get(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
       // If user is admin, get all requests
-      // If not, only get requests for their company
+      // If not, only get requests for their user
       const requests = await prisma.interventionRequest.findMany({
-        where: req.user?.isAdmin 
-          ? {} 
+        where: req.user?.isAdmin
+          ? {}
           : { userId: req.user?.id },
         orderBy: {
-          submissionDate: 'desc'
+          submissionDate: 'desc',
         },
         include: {
           user: {
@@ -485,17 +537,17 @@ app.get(
       });
 
       // Transform the data to match your frontend expectations
-      const transformedRequests = requests.map(request => ({
-        clientName: request.user.domain.companyName,
-        emissionsAbated: parseFloat(request.scope3EmissionsAbated || '0'),
-        date: new Date(request.submissionDate).toLocaleDateString(),
-        interventionId: request.id.toString(),
+      const transformedRequests = requests.map((request) => ({
+        clientName: request.clientName || request.user.domain.companyName,
+        emissionsAbated: parseFloat(request.emissionsAbated || '0'),
+        date: request.date ? new Date(request.date).toLocaleDateString() : '',
+        interventionId: request.interventionId,
         modality: request.modality,
         geography: request.geography,
-        additionality: request.additionality === 'Yes',
-        causality: request.causality === 'Yes',
+        additionality: request.additionality,
+        causality: request.causality,
         status: request.status.toLowerCase(),
-        standards: request.standards
+        standards: request.standards,
       }));
 
       res.json(transformedRequests);
@@ -575,59 +627,48 @@ app.patch(
       });
 
       // Send email notification using the emailService
-      try {
-        const statusMessages = {
-          approved: 'Your intervention request has been approved',
-          rejected: 'Your intervention request has been rejected',
-          pending_review: 'Your intervention request is under review',
-          more_info_needed:
-            'Additional information is needed for your intervention request',
-        };
-
-        const statusMessage =
-          statusMessages[status as keyof typeof statusMessages] ||
-          'Your intervention request status has been updated';
-
-        await emailService.sendEmail(
-          updatedRequest.user.email,
-          'Intervention Request Status Update - CarbonLeap',
-          `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #2C5282;">Intervention Request Status Update</h2>
-            <p>Dear ${updatedRequest.user.email},</p>
-            <p>${statusMessage}.</p>
-            ${
-              adminNotes
-                ? `<p><strong>Admin Notes:</strong> ${adminNotes}</p>`
-                : ''
-            }
-            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-              <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Request ID:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;">${id}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Status:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;">${status}</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Update Date:</strong></td>
-                <td style="padding: 8px; border-bottom: 1px solid #eee;">${new Date().toLocaleDateString()}</td>
-              </tr>
-            </table>
-            <p>Please log in to your dashboard to view the complete details of your request.</p>
-            <p style="color: #666; font-size: 12px; margin-top: 30px;">This is an automated message from CarbonLeap.</p>
-          </div>
-          `
-        );
-      } catch (emailError) {
-        console.error('Failed to send status update email:', emailError);
-      }
+      // (Optional: Implement email notifications if needed)
 
       res.json({
         success: true,
         data: updatedRequest,
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Chat with data route
+app.post(
+  '/api/chat-with-data',
+  authenticateToken,
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    try {
+      const { question } = req.body;
+
+      if (!question) {
+        return res.status(400).json({
+          success: false,
+          message: 'Question is required',
+        });
+      }
+
+      const queryService = new SecureSQLQueryService({
+        id: req.user!.id,
+        domainId: req.user!.domainId,
+        isAdmin: req.user!.isAdmin,
+      });
+
+      try {
+        const answer = await queryService.query(question);
+        res.json({
+          success: true,
+          answer,
+        });
+      } finally {
+        await queryService.cleanup();
+      }
     } catch (error) {
       next(error);
     }
@@ -662,12 +703,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Unhandled rejection handler
 process.on('unhandledRejection', (reason, promise) => {
-  console.error(
-    'Unhandled Rejection at:',
-    promise,
-    'reason:',
-    reason
-  );
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 // Start server

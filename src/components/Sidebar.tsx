@@ -1,147 +1,105 @@
-// C:/Users/PascalStrewe/Downloads/frontend_CarbonLeap/src/components/Sidebar.tsx
-
-import React, { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+// src/components/Sidebar.tsx
+import React from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import {
-  Home,
   BarChart3,
-  FileSpreadsheet,
-  Plus,
-  Clock,
-  ChevronLeft,
-  Upload,
+  FileText,
+  Users,
+  Home,
+  MessageSquare,
+  RefreshCcw,
   Settings,
-  LogOut
+  Upload,
 } from 'lucide-react';
 
-interface NavItemProps {
-  icon: React.ReactNode;
-  text: string;
-  path?: string;
-  onClick?: () => void;
+interface SidebarProps {
+  className?: string;
 }
 
-const Sidebar = () => {
-  const [collapsed, setCollapsed] = useState(false);
-  const navigate = useNavigate();
+interface NavItem {
+  label: string;
+  icon: React.ComponentType;
+  href: string;
+  adminOnly?: boolean;
+}
+
+export default function Sidebar({ className }: SidebarProps) {
   const location = useLocation();
-  const { user, logout } = useAuth();
-  
-  const handleLogout = async () => {
-    await logout();
-    navigate('/login');
-  };
+  const isAdmin = true; // Replace with your actual admin check
 
-  const navigationItems = [
+  const navItems: NavItem[] = [
     {
-      icon: <Home className="h-5 w-5" />,
-      text: "Dashboard",
-      path: "/dashboard"
+      label: 'Dashboard',
+      icon: Home,
+      href: '/dashboard',  // Changed from '/' to '/dashboard' to match App.tsx
     },
     {
-      icon: <BarChart3 className="h-5 w-5" />,
-      text: "Analytics",
-      path: "/analytics"
+      label: 'Intervention Requests',
+      icon: FileText,
+      href: '/request',  // Changed from '/intervention-requests' to '/request' to match App.tsx
     },
     {
-      icon: <FileSpreadsheet className="h-5 w-5" />,
-      text: "Reports",
-      path: "/reports"
+      label: 'Carbon Transfers',
+      icon: RefreshCcw,
+      href: '/transfers',  // Changed from '/carbon-transfer' to '/transfers' to match App.tsx
     },
     {
-      icon: <Plus className="h-5 w-5" />,
-      text: "New Request",
-      path: "/request"
+      label: 'Partnerships',
+      icon: Users,
+      href: '/partnerships',
     },
     {
-      icon: <Clock className="h-5 w-5" />,
-      text: "Pending",
-      path: "/pending"
-    }
-  ];
-
-  const adminItems = [
-    {
-      icon: <Upload className="h-5 w-5" />,
-      text: "Upload Data",
-      path: "/admin/upload"
-    }
-  ];
-
-  const bottomItems = [
-    {
-      icon: <Settings className="h-5 w-5" />,
-      text: "Settings",
-      path: "/settings"
+      label: 'Analytics',
+      icon: BarChart3,
+      href: '/analytics',
     },
     {
-      icon: <LogOut className="h-5 w-5" />,
-      text: "Logout",
-      onClick: handleLogout
-    }
-  ];
-
-  const NavItem: React.FC<NavItemProps> = ({ icon, text, path, onClick }) => (
-    <button
-      onClick={() => onClick ? onClick() : navigate(path!)}
-      className={`w-full flex items-center ${collapsed ? 'justify-center' : 'justify-between'} p-3 rounded-lg transition-all duration-300 ${
-        path && location.pathname === path
-          ? 'bg-[#103D5E] text-white'
-          : 'text-[#103D5E] hover:bg-white/30'
-      }`}
-    >
-      <div className="flex items-center gap-3">
-        {icon}
-        {!collapsed && <span className="font-medium">{text}</span>}
-      </div>
-      {!collapsed && path && location.pathname === path && (
-        <div className="h-2 w-2 rounded-full bg-white" />
-      )}
-    </button>
-  );
+      label: 'Chat with Data',
+      icon: MessageSquare,
+      href: '/chat-with-data',
+    },
+    {
+      label: 'Admin Upload',
+      icon: Upload,
+      href: '/admin/upload',  // Changed from '/admin-upload' to '/admin/upload' to match App.tsx
+      adminOnly: true,
+    },
+    {
+      label: 'Settings',
+      icon: Settings,
+      href: '/settings',
+    },
+];
 
   return (
-    <div className={`${collapsed ? 'w-20' : 'w-64'} transition-all duration-300 relative`}>
-      <div className="fixed h-full bg-white/25 backdrop-blur-md border-r border-white/20">
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="absolute -right-3 top-8 bg-white/25 backdrop-blur-md rounded-full p-1 shadow-lg hover:shadow-xl transition-all duration-300"
-        >
-          <ChevronLeft 
-            className={`h-4 w-4 text-[#103D5E] transition-transform duration-300 ${
-              collapsed ? 'rotate-180' : ''
-            }`} 
-          />
-        </button>
+    <div className={className}>
+      <nav className="space-y-1">
+        {navItems.map((item) => {
+          if (item.adminOnly && !isAdmin) return null;
+          
+          const isActive = location.pathname === item.href;
+          const Icon = item.icon;
 
-        <div className="flex flex-col h-full p-4">
-          {/* Main Navigation */}
-          <div className="space-y-2">
-            {navigationItems.map((item) => (
-              <NavItem key={item.path} {...item} />
-            ))}
-          </div>
-
-          {/* Admin Section */}
-          {user?.isAdmin && (
-            <div className="mt-8 pt-8 border-t border-white/20 space-y-2">
-              {adminItems.map((item) => (
-                <NavItem key={item.path} {...item} />
-              ))}
-            </div>
-          )}
-
-          {/* Bottom Items */}
-          <div className="mt-auto pt-8 border-t border-white/20 space-y-2">
-            {bottomItems.map((item) => (
-              <NavItem key={item.text} {...item} />
-            ))}
-          </div>
-        </div>
-      </div>
+          return (
+            <Link
+              key={item.href}
+              to={item.href}
+              className={`flex items-center px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                isActive
+                  ? 'bg-primary text-white'
+                  : 'text-slate-700 hover:bg-gray-100 hover:text-primary'
+              }`}
+            >
+              <Icon className={`mr-3 h-6 w-6 ${
+                isActive 
+                  ? 'text-white' 
+                  : 'text-slate-700 group-hover:text-primary'
+              }`} />
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
     </div>
   );
-};
-
-export default Sidebar;
+}

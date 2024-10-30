@@ -1,48 +1,57 @@
-// prisma/seed.js
-
 const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcryptjs');
 const prisma = new PrismaClient();
 
 async function main() {
-  // Create initial domain
   const domain = await prisma.domain.create({
     data: {
-      name: '@carbonleap.nl',
-      companyName: 'CarbonLeap',
+      name: 'carbonleap-test.com',
+      companyName: 'CarbonLeap Test',
     },
   });
 
-  // Create admin user
   const adminUser = await prisma.user.create({
     data: {
-      email: process.env.ADMIN_EMAIL || 'admin@carbonleap.nl',
-      // In production, you should hash this password
-      password: 'CarbonLeap1!',
+      email: 'admin@carbonleap.nl',
+      password: await bcrypt.hash('CarbonLeap1!', 10),
       isAdmin: true,
       domainId: domain.id,
     },
   });
 
-  // Create some sample interventions
-  const intervention = await prisma.intervention.create({
+  const testUser = await prisma.user.create({
     data: {
+      email: "test@carbonleap-test.com",
+      password: await bcrypt.hash('test123', 10),
       domainId: domain.id,
-      // Add other intervention fields as needed
+      isAdmin: false
     },
+  });
+
+  const interventionRequest = await prisma.interventionRequest.create({
+    data: {
+      userId: testUser.id,
+      companyDomain: "carbonleap-test.com",
+      intervention: "Test Intervention",
+      modality: "Ship",
+      geography: "Global",
+      status: "pending",
+      ghgEmissionSaving: "100",
+      vintage: "2024",
+      lowCarbonFuel: "Bio",
+      feedstock: "Waste",
+      causality: "Direct",
+      additionality: "Yes",
+      thirdPartyVerification: "Yes",
+      certificationScheme: "Gold Standard",
+      standards: "ISO14001"
+    }
   });
 
   console.log('Seed data created:', {
     domain: domain.name,
     adminUser: adminUser.email,
-    intervention: intervention.id,
+    testUser: testUser.email,
+    interventionRequest: interventionRequest.id
   });
 }
-
-main()
-  .catch((e) => {
-    console.error('Error during seeding:', e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });

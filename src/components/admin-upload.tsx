@@ -1,6 +1,7 @@
-import React, { useState, useCallback } from 'react';
+// src/components/admin-upload.tsx
+
+import React, { useState, useCallback, useEffect } from 'react';
 import { 
-  Upload, 
   FileText, 
   AlertCircle, 
   CheckCircle2, 
@@ -12,31 +13,68 @@ import {
 } from 'lucide-react';
 import { useInterventions } from '../context/InterventionContext';
 import Sidebar from './Sidebar';
+import axios from 'axios'; // Import axios for HTTP requests
+
+// Define an interface for Intervention Data for better type safety
+interface InterventionData {
+  clientName: string;
+  emissionsAbated: number;
+  date: string; // ISO format
+  interventionId: string;
+  modality: string;
+  geography: string;
+  additionality: boolean;
+  causality: boolean;
+  status: string;
+  lowCarbonFuel: string; // Defaults to "n/a" if missing
+  feedstock: string;      // Defaults to "n/a" if missing
+  certificationScheme: string; // Defaults to "n/a" if missing
+}
+
+interface User {
+  id: number;
+  email: string;
+  domain: {
+    name: string;
+    companyName: string;
+  };
+}
 
 const AdminUpload = () => {
   const { addInterventions } = useInterventions();
   const [dragActive, setDragActive] = useState(false);
-  const [files, setFiles] = useState([]);
-  const [processedData, setProcessedData] = useState([]);
+  const [files, setFiles] = useState<File[]>([]);
+  const [processedData, setProcessedData] = useState<InterventionData[]>([]);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [preview, setPreview] = useState([]);
-  const [skippedRows, setSkippedRows] = useState([]);
-  
-  const parseDate = (dateStr) => {
-    // Try different date formats
+  const [preview, setPreview] = useState<InterventionData[]>([]);
+  const [skippedRows, setSkippedRows] = useState<{ row: number; reason: string; content: string }[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
+
+  // Fetch the list of users when the component mounts
+  useEffect(() => {
+    const fetchUsers = async () => {
+      try {
+        const response = await axios.get('/api/admin/users');
+        setUsers(response.data.data);
+      } catch (err) {
+        console.error('Failed to fetch users:', err);
+        setError('Failed to fetch users.');
+      }
+    };
+
+    fetchUsers();
+  }, []);
+
+  // Function to parse various date formats into ISO format
+  const parseDate = (dateStr: string): string => {
     const formats = [
-      // ISO format
-      /^\d{4}-\d{2}-\d{2}/,
-      // DD/MM/YYYY
-      /^(\d{1,2})\/(\d{1,2})\/(\d{4})/,
-      // MM/DD/YYYY
-      /^(\d{1,2})\/(\d{1,2})\/(\d{4})/,
-      // DD-MM-YYYY
-      /^(\d{1,2})-(\d{1,2})-(\d{4})/,
-      // DD.MM.YYYY
-      /^(\d{1,2})\.(\d{1,2})\.(\d{4})/
+      /^\d{4}-\d{2}-\d{2}/, // ISO format
+      /^(\d{1,2})\/(\d{1,2})\/(\d{4})/, // DD/MM/YYYY or MM/DD/YYYY
+      /^(\d{1,2})-(\d{1,2})-(\d{4})/, // DD-MM-YYYY
+      /^(\d{1,2})\.(\d{1,2})\.(\d{4})/ // DD.MM.YYYY
     ];
 
     for (const format of formats) {
@@ -48,7 +86,7 @@ const AdminUpload = () => {
       }
     }
     
-    // If no format matches, try parsing directly
+    // Fallback to direct parsing
     const date = new Date(dateStr);
     if (!isNaN(date.getTime())) {
       return date.toISOString().split('T')[0];
@@ -57,109 +95,140 @@ const AdminUpload = () => {
     throw new Error(`Invalid date format: ${dateStr}`);
   };
 
-  const cleanValue = (value) => {
+  // Function to clean CSV cell values
+  const cleanValue = (value: string): string => {
     if (!value) return '';
-    // Remove BOM and special characters
     return value.replace(/^\ufeff/, '').replace(/[\uFEFF\xA0]/g, '').trim();
   };
 
-  const parseCSV = useCallback((text) => {
-    const skipped = [];
+  // Function to validate an intervention record
+  const validateRecord = (record: InterventionData): string[] => {
+    const errors: string[] = [];
+
+    if (!record.clientName) errors.push('clientName is required.');
+    if (!record.interventionId) errors.push('interventionId is required.');
+    if (isNaN(record.emissionsAbated)) errors.push('emissionsAbated must be a number.');
+    if (!record.date) errors.push('date is required.');
+
+    // No need to validate optional fields since they default to "n/a"
+
+    return errors;
+  };
+
+  // Function to parse CSV text into structured data
+  const parseCSV = useCallback((text: string): InterventionData[] => {
+    const skipped: { row: number; reason: string; content: string }[] = [];
     
-    // Remove any BOM character that might be present
+    // Remove BOM characters
     const cleanText = text.replace(/^\uFEFF/, '');
     
-    // Detect delimiter by checking first line
+    // Detect delimiter (comma, semicolon, or tab)
     const firstLine = cleanText.split('\n')[0];
-    let delimiter = ',';  // default
+    let delimiter = ','; // Default delimiter
     if (firstLine.includes(';')) {
       delimiter = ';';
     } else if (firstLine.includes('\t')) {
       delimiter = '\t';
     }
-  
-    // Split into lines and remove empty ones
+
+    // Split into lines and filter out empty lines
     const lines = cleanText.split('\n').filter(line => line.trim());
     
-    // Required columns with various possible formats
+    // Define required columns with possible header variations
     const columnMatchers = {
       clientName: ['CLIENT NAME', 'CLIENT_NAME', 'CLIENTNAME'],
       emissionsAbated: ['EMISSIONS ABATED', 'EMISSIONS_ABATED', 'EMISSIONSABATED'],
-      deliveryDate: ['DELIVERY DATE', 'DELIVERY_DATE', 'DELIVERYDATE'],
-      interventionId: ['INTERVENTION ID', 'INTERVENTION_ID', 'INTERVENTIONID']
+      deliveryDate: ['DELIVERY DATE', 'DELIVERY_DATE', 'DELIVERYDATE', 'DATE'],
+      interventionId: ['INTERVENTION ID', 'INTERVENTION_ID', 'INTERVENTIONID'],
+      lowCarbonFuel: ['LOW CARBON FUEL', 'LOWCARBONFUEL'],
+      feedstock: ['FEEDSTOCK', 'FEED_STOCK'],
+      certificationScheme: ['CERTIFICATION SCHEME', 'CERTIFICATIONSCHHEME', 'CERTIFICATION_SCHEME']
     };
-  
-    // Find header row (usually first row in this case)
+
+    // Extract headers and map to indices
     const headers = lines[0].split(delimiter).map(header => header.trim().toUpperCase());
     
-    // Map column indices
     const columnIndices = {
       clientName: headers.findIndex(h => columnMatchers.clientName.some(m => h.includes(m))),
       emissionsAbated: headers.findIndex(h => columnMatchers.emissionsAbated.some(m => h.includes(m))),
       deliveryDate: headers.findIndex(h => columnMatchers.deliveryDate.some(m => h.includes(m))),
       interventionId: headers.findIndex(h => columnMatchers.interventionId.some(m => h.includes(m))),
+      lowCarbonFuel: headers.findIndex(h => columnMatchers.lowCarbonFuel.some(m => h.includes(m))),
+      feedstock: headers.findIndex(h => columnMatchers.feedstock.some(m => h.includes(m))),
+      certificationScheme: headers.findIndex(h => columnMatchers.certificationScheme.some(m => h.includes(m))),
       modality: headers.findIndex(h => h.includes('MODALITY')),
       geography: headers.findIndex(h => h.includes('GEOGRAPHY')),
       additionality: headers.findIndex(h => h.includes('ADDITIONALITY')),
       causality: headers.findIndex(h => h.includes('CAUSALITY'))
     };
-  
-    // Verify required columns
+
+    // Check for missing required columns (excluding optional ones)
     const missingColumns = [];
     if (columnIndices.clientName === -1) missingColumns.push('CLIENT NAME');
     if (columnIndices.emissionsAbated === -1) missingColumns.push('EMISSIONS ABATED');
     if (columnIndices.deliveryDate === -1) missingColumns.push('DELIVERY DATE');
     if (columnIndices.interventionId === -1) missingColumns.push('INTERVENTION ID');
-  
+
     if (missingColumns.length > 0) {
       throw new Error(`Missing required columns: ${missingColumns.join(', ')}`);
     }
-  
-    // Parse data rows
-    const results = [];
-    for (let i = 1; i < lines.length; i++) {  // Start from 1 to skip header
+
+    // Parse each data row
+    const results: InterventionData[] = [];
+    for (let i = 1; i < lines.length; i++) { // Start from 1 to skip header
       const line = lines[i].trim();
       if (!line) continue;
-  
+
       try {
         // Split the line by delimiter and clean values
-        const values = line.split(delimiter).map(val => val.trim());
-  
+        const values = line.split(delimiter).map(val => cleanValue(val));
+
         // Parse date
         let date = values[columnIndices.deliveryDate];
         if (date) {
-          const [month, day, year] = date.split('/');
-          date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+          date = parseDate(date);
         }
-  
-        // Create record
-        const record = {
+
+        // Create record object with default "n/a" for optional fields
+        const record: InterventionData = {
           clientName: values[columnIndices.clientName],
-          emissionsAbated: parseFloat(values[columnIndices.emissionsAbated]) || 0,
+          emissionsAbated: parseFloat(values[columnIndices.emissionsAbated].replace(',', '.')) || 0,
           date: date,
           interventionId: values[columnIndices.interventionId],
           modality: columnIndices.modality !== -1 ? values[columnIndices.modality] : 'Unknown',
           geography: columnIndices.geography !== -1 ? values[columnIndices.geography] : 'Unknown',
           additionality: columnIndices.additionality !== -1 
-            ? values[columnIndices.additionality]?.toLowerCase().includes('yes')  // This is the key change
+            ? values[columnIndices.additionality]?.toLowerCase().includes('yes') 
             : false,
           causality: columnIndices.causality !== -1 
-            ? values[columnIndices.causality]?.toLowerCase().includes('yes')  // This is the key change
+            ? values[columnIndices.causality]?.toLowerCase().includes('yes') 
             : false,
-          status: 'Verified'
+          status: 'Verified', // Default status
+          lowCarbonFuel: columnIndices.lowCarbonFuel !== -1 && values[columnIndices.lowCarbonFuel] ? values[columnIndices.lowCarbonFuel] : 'n/a',
+          feedstock: columnIndices.feedstock !== -1 && values[columnIndices.feedstock] ? values[columnIndices.feedstock] : 'n/a',
+          certificationScheme: columnIndices.certificationScheme !== -1 && values[columnIndices.certificationScheme] ? values[columnIndices.certificationScheme] : 'n/a'
         };
-  
-        // Validate record
-        if (record.clientName && record.interventionId && !isNaN(record.emissionsAbated)) {
+
+        // Validate record (excluding optional fields)
+        const validationErrors: string[] = [];
+
+        if (!record.clientName) validationErrors.push('clientName is required.');
+        if (!record.interventionId) validationErrors.push('interventionId is required.');
+        if (isNaN(record.emissionsAbated)) validationErrors.push('emissionsAbated must be a number.');
+        if (!record.date) validationErrors.push('date is required.');
+
+        // No need to validate optional fields since they default to "n/a"
+
+        if (validationErrors.length === 0) {
           results.push(record);
         } else {
           skipped.push({
-            row: i + 1,
-            reason: 'Missing required data',
+            row: i + 1, // Assuming first row is headers
+            reason: validationErrors.join(' '),
             content: line
           });
         }
-      } catch (err) {
+      } catch (err: any) {
         skipped.push({
           row: i + 1,
           reason: err.message,
@@ -167,16 +236,22 @@ const AdminUpload = () => {
         });
       }
     }
-  
+
     if (results.length === 0) {
       throw new Error('No valid data rows found in the file');
     }
-  
+
     setSkippedRows(skipped);
     return results;
   }, []);
 
-  const processFile = useCallback((file) => {
+  // Function to process the uploaded file
+  const processFile = useCallback(async (file: File) => {
+    if (!selectedUserId) {
+      setError('Please select a user to attribute the data to.');
+      return;
+    }
+
     setProcessing(true);
     setError('');
     setSuccess('');
@@ -185,17 +260,58 @@ const AdminUpload = () => {
     
     const reader = new FileReader();
     
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
-        const text = e.target.result;
+        const text = e.target?.result as string;
         const data = parseCSV(text);
         setProcessedData(data);
         setPreview(data.slice(0, 5));
-        addInterventions(data);
-        setSuccess(`Successfully processed ${data.length} records${
-          skippedRows.length > 0 ? ` (${skippedRows.length} rows skipped)` : ''
-        }`);
-      } catch (err) {
+
+        // Send data to the server
+        const uploadPromises = data.map((intervention, index) => {
+          const dataToSend = {
+            ...intervention,
+            userId: selectedUserId, // Include the userId selected by the admin
+          };
+          return axios.post('/api/intervention-requests', dataToSend)
+            .then(response => ({ status: 'fulfilled', data: response.data }))
+            .catch(error => {
+              const message = error.response?.data?.message || error.message || 'Unknown error';
+              return { status: 'rejected', reason: message, intervention };
+            });
+        });
+
+        // Use Promise.allSettled to handle all upload promises
+        const results = await Promise.all(uploadPromises);
+
+        const fulfilled = results.filter(result => result.status === 'fulfilled').length;
+        const rejected = results.filter(result => result.status === 'rejected').length;
+
+        // Collect skipped rows based on failed uploads
+        const skipped: { row: number; reason: string; content: string }[] = [];
+        results.forEach((result, index) => {
+          if (result.status === 'rejected') {
+            skipped.push({
+              row: index + 2, // +2 to account for header and zero-based index
+              reason: result.reason,
+              content: JSON.stringify(result.intervention, null, 2)
+            });
+          }
+        });
+
+        setSkippedRows(skipped);
+
+        if (fulfilled > 0) {
+          // Update frontend state after successful uploads
+          addInterventions(data.filter((_, index) => results[index].status === 'fulfilled'));
+          setSuccess(`Successfully processed and uploaded ${fulfilled} record${fulfilled > 1 ? 's' : ''}${rejected > 0 ? `, with ${rejected} record(s) failed.` : ''}.`);
+        }
+
+        if (rejected > 0) {
+          setError(`${rejected} record(s) failed to upload. Please check the skipped rows report.`);
+        }
+      } catch (err: any) {
+        console.error('Error processing file:', err);
         setError(`Error processing file: ${err.message}`);
       } finally {
         setProcessing(false);
@@ -208,15 +324,16 @@ const AdminUpload = () => {
     };
 
     reader.readAsText(file);
-  }, [parseCSV, addInterventions]);
+  }, [parseCSV, addInterventions, selectedUserId]);
 
-  const handleDrag = useCallback((e) => {
+  // Handlers for drag and drop events
+  const handleDrag = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(e.type === "dragenter" || e.type === "dragover");
   }, []);
 
-  const handleDrop = useCallback((e) => {
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
@@ -236,15 +353,19 @@ const AdminUpload = () => {
     processFile(csvFiles[0]);
   }, [processFile]);
 
-  const handleFileInput = useCallback((e) => {
-    const selectedFiles = Array.from(e.target.files);
+  // Handler for file input selection
+  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(e.target.files || []);
     setFiles(prev => [...prev, ...selectedFiles]);
     if (selectedFiles.length > 0) {
       processFile(selectedFiles[0]);
     }
   }, [processFile]);
 
+  // Function to download skipped rows as a text file
   const downloadSkippedRows = useCallback(() => {
+    if (skippedRows.length === 0) return;
+
     const content = skippedRows.map(row => 
       `Row ${row.row}: ${row.reason}\n${row.content}`
     ).join('\n\n');
@@ -286,6 +407,27 @@ const AdminUpload = () => {
                   Save Data
                 </button>
               )}
+            </div>
+
+            {/* User Selection */}
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-[#103D5E] mb-1">
+                Select User to Attribute Data To
+              </label>
+              <select
+                className="block w-full p-2 border border-gray-300 rounded-md"
+                value={selectedUserId || ''}
+                onChange={(e) => setSelectedUserId(parseInt(e.target.value))}
+              >
+                <option value="" disabled>
+                  Select a user
+                </option>
+                {users.map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {user.email} - {user.domain.companyName}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* Upload Zone */}
@@ -361,10 +503,14 @@ const AdminUpload = () => {
                         <th className="px-4 py-2 text-left">Intervention ID</th>
                         <th className="px-4 py-2 text-left">Date</th>
                         <th className="px-4 py-2 text-left">Emissions Abated</th>
+                        <th className="px-4 py-2 text-left">Low Carbon Fuel</th>
+                        <th className="px-4 py-2 text-left">Feedstock</th>
+                        <th className="px-4 py-2 text-left">Certification Scheme</th>
                         <th className="px-4 py-2 text-left">Modality</th>
                         <th className="px-4 py-2 text-left">Geography</th>
                         <th className="px-4 py-2 text-left">Additionality</th>
                         <th className="px-4 py-2 text-left">Causality</th>
+                        <th className="px-4 py-2 text-left">Status</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -374,10 +520,14 @@ const AdminUpload = () => {
                           <td className="px-4 py-2">{row.interventionId}</td>
                           <td className="px-4 py-2">{row.date}</td>
                           <td className="px-4 py-2">{row.emissionsAbated.toFixed(1)} tCO2e</td>
+                          <td className="px-4 py-2">{row.lowCarbonFuel}</td>
+                          <td className="px-4 py-2">{row.feedstock}</td>
+                          <td className="px-4 py-2">{row.certificationScheme}</td>
                           <td className="px-4 py-2">{row.modality}</td>
                           <td className="px-4 py-2">{row.geography}</td>
                           <td className="px-4 py-2">{row.additionality ? 'Yes' : 'No'}</td>
                           <td className="px-4 py-2">{row.causality ? 'Yes' : 'No'}</td>
+                          <td className="px-4 py-2">{row.status}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -409,13 +559,13 @@ const AdminUpload = () => {
                       acc[record.clientName].modalityBreakdown[record.modality] += record.emissionsAbated;
 
                       return acc;
-                    }, {})
+                    }, {} as Record<string, { totalEmissions: number; interventions: number; modalityBreakdown: Record<string, number> }>)
                   ).map(([client, data]) => (
                     <div key={client} className="bg-white/20 p-4 rounded-lg">
                       <h3 className="font-medium text-[#103D5E] flex items-center justify-between">
                         <span>{client}</span>
                         <span className="text-sm text-[#103D5E]/70">
-                          {data.interventions} interventions
+                          {data.interventions} intervention{data.interventions > 1 ? 's' : ''}
                         </span>
                       </h3>
                       <div className="mt-2 space-y-2">
@@ -482,7 +632,8 @@ const AdminUpload = () => {
               <div>
                 <h3 className="font-medium text-[#103D5E]">Upload Guidelines</h3>
                 <ul className="mt-2 text-sm text-[#103D5E]/70 list-disc list-inside space-y-1">
-                  <li>CSV files should contain the following required columns: Client Name, Emissions Abated, Delivery Date, Intervention ID</li>
+                  <li>CSV files should contain the following required columns: Client Name, Emissions Abated, Delivery Date, Intervention ID, Modality, Geography, Additionality, Causality, Status</li>
+                  <li>Optional columns: Low Carbon Fuel, Feedstock, Certification Scheme (if missing, defaults to "n/a")</li>
                   <li>Dates can be in various formats (YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY)</li>
                   <li>Emissions values should be numeric (commas and units will be automatically handled)</li>
                   <li>Files can use different delimiters (comma, semicolon, or tab)</li>
