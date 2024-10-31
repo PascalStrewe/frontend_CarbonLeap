@@ -34,6 +34,7 @@ interface FormData {
   certificationScheme: string;
   otherCertificationScheme: string;
   standards: string;
+  clientName: string;
 }
 
 interface PendingRequest extends FormData {
@@ -72,7 +73,8 @@ const InterventionRequest = () => {
     thirdPartyVerification: 'Yes',
     certificationScheme: '',
     otherCertificationScheme: '',
-    standards: 'Book and Claim'
+    standards: 'Book and Claim',
+    clientName: user?.domain || 'Unknown Client'
   });
 
   const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
@@ -95,32 +97,66 @@ const InterventionRequest = () => {
         status: 'submitting',
         message: 'Submitting your intervention request...'
       });
-  
+
+      // Validate required fields
+      const requiredFields = ['modality', 'geography', 'additionality', 'causality'];
+      const missingFields = requiredFields.filter(field => !formData[field]);
+      
+      if (missingFields.length > 0) {
+        throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
+      }
+
       const token = localStorage.getItem('token');
       if (!token) {
         throw new Error('No authentication token found');
       }
-  
-      // Log the request for debugging
-      console.log('Submitting request...');
-  
+
+      // Properly format and validate all fields
       const requestData = {
-        ...formData,
         userId: user?.id,
-        companyDomain: user?.domain,
-        submissionDate: new Date().toISOString(),
-        status: 'pending', // This ensures new submissions are always pending
-        date: new Date().toLocaleDateString(),
+        clientName: user?.domain || 'Unknown Client',
         emissionsAbated: parseFloat(formData.scope3EmissionsAbated) || 0,
+        date: new Date().toISOString(), // Fixed: Proper ISO date format
         interventionId: Math.random().toString(36).substr(2, 9),
-        clientName: user?.name,
-        verified: false // Add this field to explicitly track verification status
+        modality: formData.modality,
+        geography: formData.geography,
+        additionality: formData.additionality === 'Yes',
+        causality: formData.causality === 'Yes',
+        status: 'pending',
+        deliveryTicketNumber: formData.deliveryTicketNumber || '',
+        materialName: formData.materialName || '',
+        materialId: formData.materialId || '',
+        vendorName: formData.vendorName || '',
+        quantity: parseFloat(formData.lowCarbonFuelLiters) || 0,
+        unit: 'liters',
+        amount: parseFloat(formData.lowCarbonFuelMT) || 0,
+        lowCarbonFuel: formData.lowCarbonFuel || 'n/a',
+        feedstock: formData.feedstock || 'n/a',
+        certificationScheme: formData.certificationScheme || 'n/a',
+        ghgEmissionSaving: formData.ghgEmissionSaving.toString(),
+        vintage: parseInt(formData.vintage), // Fixed: Convert to number
+        thirdPartyVerification: formData.thirdPartyVerification,
+        standards: formData.standards || 'Book and Claim',
+        // Optional fields with proper defaults
+        otherCertificationScheme: formData.certificationScheme === 'Other' 
+          ? formData.otherCertificationScheme 
+          : undefined,
+        vesselType: formData.modality === 'Marine' 
+          ? formData.vesselType 
+          : undefined
       };
 
+      // Type validation
+      if (isNaN(requestData.vintage)) {
+        throw new Error('Invalid vintage year');
+      }
+
+      if (isNaN(requestData.emissionsAbated)) {
+        throw new Error('Invalid emissions abated value');
+      }
+
       console.log('Submitting request data:', requestData);
-  
-      console.log('Request data:', requestData);
-  
+
       const response = await fetch('http://localhost:3001/api/intervention-requests', {
         method: 'POST',
         headers: {
@@ -129,18 +165,15 @@ const InterventionRequest = () => {
         },
         body: JSON.stringify(requestData)
       });
-  
-      console.log('Response status:', response.status);
-  
+
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Error response:', errorText);
-        throw new Error(errorText || 'Failed to submit request');
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to submit request');
       }
-  
+
       const result = await response.json();
       console.log('Success response:', result);
-  
+
       setPendingRequests(prev => [...prev, { 
         ...requestData, 
         id: result.requestId 
@@ -148,14 +181,14 @@ const InterventionRequest = () => {
 
       // Refresh the intervention data
       refreshInterventions();
-  
+
       setSubmissionStatus({
         status: 'success',
         message: 'Request submitted successfully'
       });
       
       setTimeout(() => setSubmitted(true), 1500);
-  
+
     } catch (error) {
       console.error('Submission error:', error);
       setSubmissionStatus({

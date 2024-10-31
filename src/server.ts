@@ -518,20 +518,18 @@ app.post(
       console.log('Processing intervention request:', req.body);
 
       // Determine userId
-      let userId = req.user!.id; // Default to authenticated user
+      let userId = req.user!.id;
 
       if (req.user!.isAdmin && (req.body.userId || req.body.domainId)) {
-        // Admin can specify userId or domainId
         if (req.body.userId) {
           userId = req.body.userId;
         } else if (req.body.domainId) {
-          // Find a user in the specified domain
           const domainUsers = await prisma.user.findMany({
             where: { domainId: req.body.domainId },
             select: { id: true },
           });
           if (domainUsers.length > 0) {
-            userId = domainUsers[0].id; // Use the first user in the domain
+            userId = domainUsers[0].id;
           } else {
             res.status(400).json({
               success: false,
@@ -548,22 +546,52 @@ app.post(
         return;
       }
 
-      // Prepare data for creation
+      // Parse and validate vintage
+      const vintage = parseInt(req.body.vintage);
+      if (isNaN(vintage)) {
+        res.status(400).json({
+          success: false,
+          message: 'Invalid vintage year provided',
+        });
+        return;
+      }
+
+      // Prepare data for creation with all required fields
       const interventionRequestData = {
         userId: userId,
-        clientName: req.body.clientName,
-        emissionsAbated: req.body.emissionsAbated,
+        clientName: req.body.clientName || 'Unknown Client',
+        emissionsAbated: parseFloat(req.body.emissionsAbated) || 0,
         date: new Date(req.body.date),
         interventionId: req.body.interventionId,
         modality: req.body.modality,
         geography: req.body.geography,
-        additionality: req.body.additionality,
-        causality: req.body.causality,
+        additionality: req.body.additionality === true || req.body.additionality === 'true' || req.body.additionality === 'Yes',
+        causality: req.body.causality === true || req.body.causality === 'true' || req.body.causality === 'Yes',
         status: req.body.status || 'Verified',
+        // Include all required fields with proper defaults
         lowCarbonFuel: req.body.lowCarbonFuel || 'n/a',
         feedstock: req.body.feedstock || 'n/a',
         certificationScheme: req.body.certificationScheme || 'n/a',
+        ghgEmissionSaving: req.body.ghgEmissionSaving || '0',
+        vintage: vintage, // Add the parsed vintage field
+        thirdPartyVerification: req.body.thirdPartyVerification || 'Pending',
+        // Optional fields
+        deliveryTicketNumber: req.body.deliveryTicketNumber,
+        materialName: req.body.materialName,
+        materialId: req.body.materialId,
+        vendorName: req.body.vendorName,
+        quantity: parseFloat(req.body.quantity) || 0,
+        unit: req.body.unit,
+        amount: parseFloat(req.body.amount) || 0,
+        materialSustainabilityStatus: req.body.materialSustainabilityStatus === true,
+        interventionType: req.body.interventionType,
+        standards: req.body.standards,
+        // Set default amounts
+        totalAmount: parseFloat(req.body.emissionsAbated) || 0,
+        remainingAmount: parseFloat(req.body.emissionsAbated) || 0
       };
+
+      console.log('Creating intervention with data:', interventionRequestData);
 
       const interventionRequest = await prisma.interventionRequest.create({
         data: interventionRequestData,
@@ -578,6 +606,7 @@ app.post(
         data: interventionRequest,
       });
     } catch (error) {
+      console.error('Error creating intervention request:', error);
       next(error);
     }
   }

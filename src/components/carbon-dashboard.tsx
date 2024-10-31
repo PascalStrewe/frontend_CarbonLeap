@@ -83,12 +83,15 @@ const Dashboard: React.FC = () => {
   const pendingRequests = filteredInterventionData.filter(
     intervention => {
       console.log('Checking intervention status:', intervention.status);
-      return intervention.status?.toLowerCase() === 'pending_review';
+      return intervention.status?.toLowerCase() === 'pending' || 
+             intervention.status?.toLowerCase() === 'pending_review';
     }
   ).length;
 
   const verifiedRequests = filteredInterventionData.filter(
-    intervention => intervention.status?.toLowerCase() === 'verified'
+    intervention => 
+      intervention.status?.toLowerCase() === 'verified' || 
+      intervention.status?.toLowerCase() === 'completed'
   ).length;
 
   console.log('Pending Requests Count:', pendingRequests);

@@ -1,0 +1,63 @@
+{
+    "name": "Example Company Template",
+    "headerImage": "/templates/assets/example-header.png",
+    "logo": "/templates/assets/example-logo.png",
+    "primaryColor": {
+      "r": 0.063,
+      "g": 0.239,
+      "b": 0.369
+    },
+    "secondaryColor": {
+      "r": 0.725,
+      "g": 0.875,
+      "b": 0.851
+    },
+    "sections": [
+      {
+        "title": "Claim Details",
+        "fields": [
+          { "key": "claimId", "label": "Reference Number", "required": true },
+          { "key": "claimDate", "label": "Issue Date", "format": "date", "required": true },
+          { "key": "amount", "label": "Carbon Reduction", "format": "number", "required": true }
+        ]
+      },
+      {
+        "title": "Client Information",
+        "fields": [
+          { "key": "clientName", "label": "Client", "required": true },
+          { "key": "deliveryTicketNumber", "label": "Delivery Reference" },
+          { "key": "materialName", "label": "Material Type" },
+          { "key": "vendorName", "label": "Supplier" }
+        ]
+      },
+      {
+        "title": "Intervention Details",
+        "fields": [
+          { "key": "modality", "label": "Intervention Type", "required": true },
+          { "key": "geography", "label": "Location", "required": true },
+          { "key": "certificationScheme", "label": "Certification", "required": true },
+          { "key": "emissionReductionPercentage", "label": "Emission Reduction", "format": "percentage" },
+          { "key": "lowCarbonFuel", "label": "Low Carbon Fuel" },
+          { "key": "baselineFuelProduct", "label": "Baseline Fuel" },
+          { "key": "feedstock", "label": "Feedstock Type" }
+        ]
+      }
+    ],
+    "layout": {
+      "marginTop": 50,
+      "marginBottom": 50,
+      "marginLeft": 50,
+      "marginRight": 50,
+      "headerHeight": 120,
+      "footerHeight": 100
+    },
+    "footer": {
+      "text": "This carbon reduction claim statement is officially verified and registered.",
+      "includeQR": true,
+      "includeLogo": true
+    },
+    "watermark": {
+      "text": "VERIFIED CARBON CLAIM",
+      "opacity": 0.1
+    }
+  }

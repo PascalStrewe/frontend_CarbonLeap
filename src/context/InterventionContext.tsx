@@ -12,6 +12,8 @@ import axios from 'axios';
 
 // Define the shape of your intervention data
 export interface InterventionData {
+  id?: string;
+  userId: number;
   clientName: string;
   emissionsAbated: number;
   date: string; // ISO format
@@ -21,10 +23,22 @@ export interface InterventionData {
   additionality: boolean;
   causality: boolean;
   status: string;
-  lowCarbonFuel: string; // Defaults to "n/a" if missing
-  feedstock: string; // Defaults to "n/a" if missing
-  certificationScheme: string; // Defaults to "n/a" if missing
-  // Add other fields as necessary
+  deliveryTicketNumber?: string;
+  materialName?: string;
+  materialId?: string;
+  vendorName?: string;
+  quantity?: number;
+  unit?: string;
+  amount?: number;
+  lowCarbonFuel: string;
+  feedstock: string;
+  certificationScheme: string;
+  ghgEmissionSaving: string;
+  vintage: number;
+  thirdPartyVerification: string;
+  standards?: string;
+  otherCertificationScheme?: string;
+  vesselType?: string;
 }
 
 // Define the context type

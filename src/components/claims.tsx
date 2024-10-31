@@ -6,25 +6,75 @@ import {
   Download,
   AlertTriangle,
   Plus,
-  Search
+  Search,
+  Eye
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import Sidebar from './Sidebar';
 
+interface ClaimStatement {
+  id: string;
+  pdfUrl: string;
+  templateVersion: string;
+  createdAt: Date;
+}
+
+interface Claim {
+  id: string;
+  intervention: {
+    modality: string;
+    geography: string;
+    interventionId: string;
+    certificationScheme: string;
+    vintage: number;
+  };
+  amount: number;
+  vintage: number;
+  expiryDate: Date;
+  status: string;
+  statement?: ClaimStatement;
+}
+
+interface Domain {
+  id: number;
+  companyName: string;
+}
+
 const CarbonClaims = () => {
   const { user } = useAuth();
-  const [claims, setClaims] = useState([]);
+  const [claims, setClaims] = useState<Claim[]>([]);
   const [interventions, setInterventions] = useState([]);
   const [isClaimFormOpen, setIsClaimFormOpen] = useState(false);
   const [selectedIntervention, setSelectedIntervention] = useState('');
   const [claimAmount, setClaimAmount] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
+  const [domain, setDomain] = useState<Domain | null>(null);
+  const [generatingPDF, setGeneratingPDF] = useState(false);
 
   useEffect(() => {
     fetchClaims();
     fetchInterventions();
+    fetchDomain();
   }, []);
+
+  const fetchDomain = async () => {
+    try {
+      const response = await fetch(`http://localhost:3001/api/domains/${user.domainId}`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setDomain(data);
+      }
+    } catch (error) {
+      console.error('Error fetching domain:', error);
+    }
+  };
 
   const fetchClaims = async () => {
     try {
@@ -60,8 +110,29 @@ const CarbonClaims = () => {
     }
   };
 
-  const handleCreateClaim = async (e) => {
+  const handlePreviewStatement = async (claim: Claim) => {
+    try {
+      const response = await fetch(`http://localhost:3001/api/claims/${claim.id}/preview-statement`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        setPreviewUrl(url);
+        setIsPreviewModalOpen(true);
+      }
+    } catch (error) {
+      console.error('Error previewing statement:', error);
+    }
+  };
+
+  const handleCreateClaim = async (e: React.FormEvent) => {
     e.preventDefault();
+    setGeneratingPDF(true);
+    
     try {
       const response = await fetch('http://localhost:3001/api/claims', {
         method: 'POST',
@@ -71,7 +142,8 @@ const CarbonClaims = () => {
         },
         body: JSON.stringify({
           interventionId: selectedIntervention,
-          amount: parseFloat(claimAmount)
+          amount: parseFloat(claimAmount),
+          generateStatement: true // Tell backend to generate PDF statement
         })
       });
       
@@ -84,6 +156,34 @@ const CarbonClaims = () => {
       }
     } catch (error) {
       console.error('Error creating claim:', error);
+    } finally {
+      setGeneratingPDF(false);
+    }
+  };
+
+  const handleDownloadStatement = async (claim: Claim) => {
+    if (!claim.statement?.pdfUrl) return;
+    
+    try {
+      const response = await fetch(claim.statement.pdfUrl, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `claim-statement-${claim.id}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      console.error('Error downloading statement:', error);
     }
   };
 
@@ -175,27 +275,62 @@ const CarbonClaims = () => {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          {claim.statement && (
-                            <a
-                              href={claim.statement.pdfUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-2 text-[#103D5E] hover:text-[#103D5E]/70 transition-colors duration-200"
-                            >
-                              <Download className="h-4 w-4" />
-                              PDF
-                            </a>
-                          )}
-                        </td>
+                            <div className="flex items-center gap-2">
+                                {claim.statement ? (
+                                <>
+                                    <button
+                                    onClick={() => handlePreviewStatement(claim)}
+                                    className="text-[#103D5E] hover:text-[#103D5E]/70 transition-colors duration-200"
+                                    >
+                                    <Eye className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                    onClick={() => handleDownloadStatement(claim)}
+                                    className="text-[#103D5E] hover:text-[#103D5E]/70 transition-colors duration-200"
+                                    >
+                                    <Download className="h-4 w-4" />
+                                    </button>
+                                </>
+                                ) : (
+                                <span className="text-sm text-[#103D5E]/60">
+                                    Generating...
+                                </span>
+                                )}
+                            </div>
+                            </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                
+                {/* Add preview modal */}
+                {isPreviewModalOpen && previewUrl && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+                    <div className="bg-white rounded-xl p-6 w-full max-w-4xl h-[80vh] flex flex-col">
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-xl font-semibold text-[#103D5E]">Statement Preview</h2>
+                        <button
+                        onClick={() => {
+                            setIsPreviewModalOpen(false);
+                            URL.revokeObjectURL(previewUrl);
+                        }}
+                        className="text-[#103D5E] hover:text-[#103D5E]/70"
+                        >
+                        ×
+                        </button>
+                    </div>
+                    <iframe
+                        src={previewUrl}
+                        className="flex-1 w-full rounded-lg border border-gray-200"
+                    />
+                    </div>
+                </div>
+                )}
 
                 {filteredClaims.length === 0 && (
-                  <div className="text-center py-8 text-[#103D5E]/60">
+                <div className="text-center py-8 text-[#103D5E]/60">
                     No claims found
-                  </div>
+                </div>
                 )}
               </div>
             </div>
