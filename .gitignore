@@ -26,3 +26,15 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Storage
+/storage/*
+!/storage/.gitkeep
+/public/storage
+/temp
+
+# Build artifacts
+.next/
+out/
+build/
+dist/

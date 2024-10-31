@@ -12,10 +12,10 @@ import multer from 'multer';
 import { parse as csvParse } from 'csv-parse';
 import { Readable } from 'stream';
 import { PDFDocument, rgb } from 'pdf-lib';
-import fs from 'fs/promises';
 import path from 'path';
-import { PDFTemplateService } from './services/PDFTemplateService';
 import { ClaimsExpirationService } from './services/ClaimsExpirationService';
+import { PDFTemplateService } from './services/PDFTemplateService';
+import fs from 'fs/promises';
 
 // Type definitions
 interface AuthRequest extends Request {
@@ -55,8 +55,19 @@ interface InterventionRecord {
   certificationScheme?: string;
 }
 
+
+const prisma = new PrismaClient({
+  log: [
+    { level: 'query', emit: 'event' },
+    { level: 'error', emit: 'stdout' },
+    { level: 'warn', emit: 'stdout' },
+  ],
+});
+
 // Initialize Express app
 const app = express();
+const pdfTemplateService = new PDFTemplateService();
+const claimsExpirationService = new ClaimsExpirationService();
 
 // Configure multer with file filter
 const upload = multer({
@@ -93,18 +104,6 @@ for (const envVar of requiredEnvVars) {
     throw new Error(`Missing required environment variable: ${envVar}`);
   }
 }
-
-// Initialize PrismaClient
-const prisma = new PrismaClient({
-  log: [
-    { level: 'query', emit: 'event' },
-    { level: 'error', emit: 'stdout' },
-    { level: 'warn', emit: 'stdout' },
-  ],
-});
-
-const pdfTemplateService = new PDFTemplateService();
-const claimsExpirationService = new ClaimsExpirationService();
 
 // Start the claims expiration service when the server starts
 claimsExpirationService.start();
@@ -252,6 +251,79 @@ app.use(
     });
   }
 );
+
+app.use('/storage', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const filePath = path.join(process.cwd(), 'storage', req.path);
+    
+    // Prevent directory traversal
+    if (!filePath.startsWith(path.join(process.cwd(), 'storage'))) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    try {
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) {
+        res.status(404).json({ error: 'File not found' });
+        return;
+      }
+
+      // Check if file is metadata
+      if (filePath.endsWith('.meta.json')) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
+      // Check metadata for access control
+      const metadataPath = `${filePath}.meta.json`;
+      try {
+        const metadataContent = await fs.readFile(metadataPath, 'utf-8');
+        const metadata = JSON.parse(metadataContent);
+        
+        // Check if user has access to this file
+        if (metadata.domainId && metadata.domainId !== req.user?.domainId && !req.user?.isAdmin) {
+          res.status(403).json({ error: 'Access denied' });
+          return;
+        }
+      } catch (error) {
+        // If no metadata exists, continue serving the file
+      }
+
+      // Set appropriate headers
+      res.setHeader('Content-Type', getMimeType(filePath));
+      if (process.env.NODE_ENV === 'production') {
+        res.setHeader('Cache-Control', 'public, max-age=31536000'); // 1 year
+      }
+
+      // Stream the file
+      const fileStream = fs.createReadStream(filePath);
+      fileStream.pipe(res);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        res.status(404).json({ error: 'File not found' });
+      } else {
+        throw error;
+      }
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Helper function for MIME types
+function getMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml'
+  };
+  return mimeTypes[ext] || 'application/octet-stream';
+}
 
 // Health check endpoint
 app.get('/api/health', (_req: Request, res: Response): void => {
@@ -921,93 +993,115 @@ app.post(
         return;
       }
 
-      console.log('Creating claim with:', {
-        interventionId,
-        amount,
-        requestingUser: req.user?.id,
-        requestingDomain: req.user?.domainId
-      });
-
-      // First, find the intervention request to get its internal ID
-      const interventionRequest = await prisma.interventionRequest.findFirst({
-        where: {
-          OR: [
-            { id: interventionId },
-            { interventionId: interventionId }
-          ]
-        },
-        include: {
-          claims: true // Include claims to check total claimed amount
-        }
-      });
-
-      if (!interventionRequest) {
-        console.log('Failed to find intervention with ID:', interventionId);
-        res.status(404).json({
-          success: false,
-          message: `Intervention not found with ID: ${interventionId}`
-        });
-        return;
-      }
-
-      console.log('Found intervention:', {
-        id: interventionRequest.id,
-        interventionId: interventionRequest.interventionId,
-        emissionsAbated: interventionRequest.emissionsAbated,
-        currentClaims: interventionRequest.claims.length
-      });
-
       // Start transaction
       const result = await prisma.$transaction(async (tx) => {
-        // Calculate available amount using the intervention we already found
+        // Find intervention
+        const interventionRequest = await tx.interventionRequest.findFirst({
+          where: {
+            OR: [
+              { id: interventionId },
+              { interventionId: interventionId }
+            ]
+          },
+          include: {
+            claims: true
+          }
+        });
+
+        if (!interventionRequest) {
+          throw new Error(`Intervention not found with ID: ${interventionId}`);
+        }
+
+        // Calculate available amount
         const totalClaimed = interventionRequest.claims
           .filter(claim => claim.status === 'active')
           .reduce((sum, claim) => sum + claim.amount, 0);
         
         const available = interventionRequest.emissionsAbated - totalClaimed;
 
-        console.log('Availability check:', {
-          totalClaimed,
-          emissionsAbated: interventionRequest.emissionsAbated,
-          available,
-          requestedAmount: amount
-        });
-
         if (amount > available) {
           throw new Error(`Insufficient available amount. Available: ${available} tCO2e`);
+        }
+
+        // Get domain for PDF generation
+        const domain = await tx.domain.findUnique({
+          where: { id: req.user!.domainId }
+        });
+
+        if (!domain) {
+          throw new Error('Domain not found');
         }
 
         // Create claim
         const claim = await tx.carbonClaim.create({
           data: {
-            interventionId: interventionRequest.interventionId, // FIXED: Use interventionId instead of id
+            interventionId: interventionRequest.interventionId,
             claimingDomainId: req.user!.domainId,
             amount: parseFloat(amount.toString()),
-            vintage: parseInt(interventionRequest.vintage),
+            vintage: parseInt(interventionRequest.vintage.toString()),
             expiryDate: new Date(Date.now() + (2 * 365 * 24 * 60 * 60 * 1000)),
             status: 'active'
-          },
-          include: {
-            intervention: true,
-            statement: true
           }
         });
 
-        console.log('Created claim:', {
-          id: claim.id,
-          amount: claim.amount,
-          interventionId: claim.interventionId
+        // Generate PDF statement
+        const pdfBuffer = await pdfTemplateService.generateClaimStatement(
+          claim,
+          interventionRequest,
+          domain
+        );
+
+        // Create directory if it doesn't exist
+        const storageDir = path.join(process.cwd(), 'storage', 'claims', domain.id.toString());
+        await fs.mkdir(storageDir, { recursive: true });
+
+        // Save PDF file
+        const pdfPath = path.join('claims', domain.id.toString(), `${claim.id}.pdf`);
+        const fullPath = path.join(process.cwd(), 'storage', pdfPath);
+        await fs.writeFile(fullPath, pdfBuffer);
+
+        // Save metadata
+        await fs.writeFile(
+          `${fullPath}.meta.json`,
+          JSON.stringify({
+            domainId: domain.id,
+            createdAt: new Date().toISOString(),
+            createdBy: req.user!.id,
+            mimeType: 'application/pdf',
+            visibility: 'private'
+          })
+        );
+
+        // Create statement record
+        await tx.claimStatement.create({
+          data: {
+            claimId: claim.id,
+            pdfUrl: `/storage/${pdfPath}`,
+            templateVersion: '1.0',
+            metadata: {
+              generatedAt: new Date(),
+              generatedBy: req.user!.id,
+              template: await pdfTemplateService.loadDomainTemplate(domain.id)
+            }
+          }
         });
 
         // Update intervention's remaining amount
         await tx.interventionRequest.update({
-          where: { id: interventionRequest.id }, // Use the internal ID
+          where: { id: interventionRequest.id },
           data: {
             remainingAmount: available - amount
           }
         });
 
-        return claim;
+        // Return complete claim data
+        return tx.carbonClaim.findUnique({
+          where: { id: claim.id },
+          include: {
+            intervention: true,
+            statement: true
+          }
+        });
       });
 
       console.log('Transaction completed successfully');
@@ -1020,7 +1114,6 @@ app.post(
     } catch (error) {
       console.error('Error creating claim:', error);
       
-      // Check for specific error types
       if (error instanceof Error) {
         if (error.message.includes('Insufficient available amount')) {
           res.status(400).json({
