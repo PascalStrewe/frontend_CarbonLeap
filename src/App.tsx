@@ -11,8 +11,9 @@ import { InterventionProvider } from './context/InterventionContext';
 import CarbonTransfer from './components/carbon-transfer';
 import PartnershipManagement from './components/partnership-management';
 import ChatWithData from './components/chat-with-data';
+import CarbonClaims from './components/claims';
 
-const ProtectedRoute = ({ children }) => {
+const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, isLoading } = useAuth();
   
   if (isLoading) {
@@ -30,7 +31,7 @@ const ProtectedRoute = ({ children }) => {
   return <>{children}</>;
 };
 
-const AdminRoute = ({ children }) => {
+const AdminRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, isLoading } = useAuth();
   
   if (isLoading) {
@@ -66,67 +67,106 @@ function AppRoutes() {
       <Route path="/domain-setup" element={user ? <Navigate to="/dashboard" /> : <DomainSetup />} />
       
       {/* Protected routes */}
-      <Route path="/dashboard" element={
-        <ProtectedRoute>
-          <Dashboard />
-        </ProtectedRoute>
-      } />
-      <Route path="/request" element={
-        <ProtectedRoute>
-          <InterventionRequest />
-        </ProtectedRoute>
-      } />
-      <Route path="/reports" element={
-        <ProtectedRoute>
-          <ReportingPage />
-        </ProtectedRoute>
-      } />
-      <Route path="/analytics" element={
-        <ProtectedRoute>
-          <AnalyticsPage />
-        </ProtectedRoute>
-      } />
-      <Route path="/partnerships" element={
-        <ProtectedRoute>
-          <PartnershipManagement />
-        </ProtectedRoute>
-      } />
-      <Route path="/transfers" element={
-        <ProtectedRoute>
-          <CarbonTransfer />
-        </ProtectedRoute>
-      } />
-      <Route path="/chat-with-data" element={
-        <ProtectedRoute>
-          <ChatWithData />
-        </ProtectedRoute>
-      } />
-      <Route path="/pending" element={
-        <ProtectedRoute>
-          <div className="min-h-screen bg-[#DAE9E6] p-8">
-            <h1 className="text-2xl font-bold text-[#103D5E]">Pending Requests Coming Soon</h1>
-          </div>
-        </ProtectedRoute>
-      } />
+      <Route 
+        path="/dashboard" 
+        element={
+          <ProtectedRoute>
+            <Dashboard />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/request" 
+        element={
+          <ProtectedRoute>
+            <InterventionRequest />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/claims" 
+        element={
+          <ProtectedRoute>
+            <CarbonClaims />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/reports" 
+        element={
+          <ProtectedRoute>
+            <ReportingPage />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/analytics" 
+        element={
+          <ProtectedRoute>
+            <AnalyticsPage />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/partnerships" 
+        element={
+          <ProtectedRoute>
+            <PartnershipManagement />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/transfers" 
+        element={
+          <ProtectedRoute>
+            <CarbonTransfer />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/chat-with-data" 
+        element={
+          <ProtectedRoute>
+            <ChatWithData />
+          </ProtectedRoute>
+        } 
+      />
+      <Route 
+        path="/pending" 
+        element={
+          <ProtectedRoute>
+            <div className="min-h-screen bg-[#DAE9E6] p-8">
+              <h1 className="text-2xl font-bold text-[#103D5E]">Pending Requests Coming Soon</h1>
+            </div>
+          </ProtectedRoute>
+        } 
+      />
       
       {/* Admin routes */}
-      <Route path="/admin/upload" element={
-        <AdminRoute>
-          <AdminUpload />
-        </AdminRoute>
-      } />
+      <Route 
+        path="/admin/upload" 
+        element={
+          <AdminRoute>
+            <AdminUpload />
+          </AdminRoute>
+        } 
+      />
       
       {/* Redirect root to dashboard or login */}
-      <Route path="/" element={
-        user ? <Navigate to="/dashboard" /> : <Navigate to="/login" />
-      } />
+      <Route 
+        path="/" 
+        element={user ? <Navigate to="/dashboard" /> : <Navigate to="/login" />} 
+      />
       
       {/* Catch all route */}
-      <Route path="*" element={
-        <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
-          <div className="text-[#103D5E] text-xl">Page not found</div>
-        </div>
-      } />
+      <Route 
+        path="*" 
+        element={
+          <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
+            <div className="text-[#103D5E] text-xl">Page not found</div>
+          </div>
+        } 
+      />
     </Routes>
   );
 }

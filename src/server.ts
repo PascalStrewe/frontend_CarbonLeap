@@ -11,6 +11,11 @@ import { SecureSQLQueryService } from './services/SecureSQLQueryService';
 import multer from 'multer';
 import { parse as csvParse } from 'csv-parse';
 import { Readable } from 'stream';
+import { PDFDocument, rgb } from 'pdf-lib';
+import fs from 'fs/promises';
+import path from 'path';
+import { PDFTemplateService } from './services/PDFTemplateService';
+import { ClaimsExpirationService } from './services/ClaimsExpirationService';
 
 // Type definitions
 interface AuthRequest extends Request {
@@ -97,6 +102,12 @@ const prisma = new PrismaClient({
     { level: 'warn', emit: 'stdout' },
   ],
 });
+
+const pdfTemplateService = new PDFTemplateService();
+const claimsExpirationService = new ClaimsExpirationService();
+
+// Start the claims expiration service when the server starts
+claimsExpirationService.start();
 
 // Prisma logging
 prisma.$on('query', (e) => {
@@ -722,6 +733,359 @@ app.patch(
   }
 );
 
+
+// Template management routes
+app.get(
+  '/api/templates/:domainId',
+  authenticateToken,
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { domainId } = req.params;
+      
+      // Check authorization
+      if (!req.user?.isAdmin && req.user?.domainId !== parseInt(domainId)) {
+        res.status(403).json({
+          success: false,
+          message: 'Not authorized to access this template',
+        });
+        return;
+      }
+
+      const template = await pdfTemplateService.loadDomainTemplate(parseInt(domainId));
+      
+      res.json({
+        success: true,
+        data: template,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+app.post(
+  '/api/templates/:domainId',
+  authenticateToken,
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { domainId } = req.params;
+      const templateData = req.body;
+      
+      // Check authorization
+      if (!req.user?.isAdmin && req.user?.domainId !== parseInt(domainId)) {
+        res.status(403).json({
+          success: false,
+          message: 'Not authorized to modify this template',
+        });
+        return;
+      }
+
+      // Validate template data
+      if (templateData.headerImage) {
+        // Simple validation based on base64 mime type
+        if (!templateData.headerImage.startsWith('data:image/')) {
+          res.status(400).json({
+            success: false,
+            message: 'Header image must be a valid image file',
+          });
+          return;
+        }
+
+        const mimeType = templateData.headerImage.split(';')[0].split(':')[1];
+        const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/jpg'];
+        
+        if (!allowedMimeTypes.includes(mimeType)) {
+          res.status(400).json({
+            success: false,
+            message: 'Header image must be PNG or JPEG',
+          });
+          return;
+        }
+      }
+
+      await pdfTemplateService.saveTemplate(parseInt(domainId), templateData);
+      
+      res.json({
+        success: true,
+        message: 'Template updated successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Add template preview route
+app.post(
+  '/api/templates/:domainId/preview',
+  authenticateToken,
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { domainId } = req.params;
+      const { templateData } = req.body;
+
+      // Check authorization
+      if (!req.user?.isAdmin && req.user?.domainId !== parseInt(domainId)) {
+        res.status(403).json({
+          success: false,
+          message: 'Not authorized to preview this template',
+        });
+        return;
+      }
+
+      // Create a sample claim and intervention for preview
+      const sampleData = {
+        claim: {
+          id: 'PREVIEW-CLAIM-001',
+          amount: 100.50,
+          expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        },
+        intervention: {
+          interventionId: 'PREVIEW-INT-001',
+          modality: 'Sample Intervention',
+          geography: 'Sample Location',
+          certificationScheme: 'Sample Certification',
+          vintage: new Date().getFullYear(),
+        },
+        domain: await prisma.domain.findUnique({
+          where: { id: parseInt(domainId) },
+        }),
+      };
+
+      // Generate preview PDF with sample data
+      const pdfBytes = await pdfTemplateService.generateClaimStatement(
+        sampleData.claim,
+        sampleData.intervention,
+        sampleData.domain
+      );
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename=template-preview.pdf');
+      res.send(Buffer.from(pdfBytes));
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Claims routes
+app.post(
+  '/api/claims',
+  authenticateToken,
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    console.log('Received claim request:', {
+      body: req.body,
+      path: req.path,
+      method: req.method,
+      user: req.user
+    });
+
+    try {
+      const { interventionId, amount } = req.body;
+      
+      if (!interventionId || !amount) {
+        console.log('Missing required fields:', { interventionId, amount });
+        res.status(400).json({
+          success: false,
+          message: 'InterventionId and amount are required',
+        });
+        return;
+      }
+
+      console.log('Creating claim with:', {
+        interventionId,
+        amount,
+        requestingUser: req.user?.id,
+        requestingDomain: req.user?.domainId
+      });
+
+      // First, find the intervention request to get its internal ID
+      const interventionRequest = await prisma.interventionRequest.findFirst({
+        where: {
+          OR: [
+            { id: interventionId },
+            { interventionId: interventionId }
+          ]
+        },
+        include: {
+          claims: true // Include claims to check total claimed amount
+        }
+      });
+
+      if (!interventionRequest) {
+        console.log('Failed to find intervention with ID:', interventionId);
+        res.status(404).json({
+          success: false,
+          message: `Intervention not found with ID: ${interventionId}`
+        });
+        return;
+      }
+
+      console.log('Found intervention:', {
+        id: interventionRequest.id,
+        interventionId: interventionRequest.interventionId,
+        emissionsAbated: interventionRequest.emissionsAbated,
+        currentClaims: interventionRequest.claims.length
+      });
+
+      // Start transaction
+      const result = await prisma.$transaction(async (tx) => {
+        // Calculate available amount using the intervention we already found
+        const totalClaimed = interventionRequest.claims
+          .filter(claim => claim.status === 'active')
+          .reduce((sum, claim) => sum + claim.amount, 0);
+        
+        const available = interventionRequest.emissionsAbated - totalClaimed;
+
+        console.log('Availability check:', {
+          totalClaimed,
+          emissionsAbated: interventionRequest.emissionsAbated,
+          available,
+          requestedAmount: amount
+        });
+
+        if (amount > available) {
+          throw new Error(`Insufficient available amount. Available: ${available} tCO2e`);
+        }
+
+        // Create claim
+        const claim = await tx.carbonClaim.create({
+          data: {
+            interventionId: interventionRequest.interventionId, // FIXED: Use interventionId instead of id
+            claimingDomainId: req.user!.domainId,
+            amount: parseFloat(amount.toString()),
+            vintage: parseInt(interventionRequest.vintage),
+            expiryDate: new Date(Date.now() + (2 * 365 * 24 * 60 * 60 * 1000)),
+            status: 'active'
+          },
+          include: {
+            intervention: true,
+            statement: true
+          }
+        });
+
+        console.log('Created claim:', {
+          id: claim.id,
+          amount: claim.amount,
+          interventionId: claim.interventionId
+        });
+
+        // Update intervention's remaining amount
+        await tx.interventionRequest.update({
+          where: { id: interventionRequest.id }, // Use the internal ID
+          data: {
+            remainingAmount: available - amount
+          }
+        });
+
+        return claim;
+      });
+
+      console.log('Transaction completed successfully');
+
+      res.json({
+        success: true,
+        data: result
+      });
+
+    } catch (error) {
+      console.error('Error creating claim:', error);
+      
+      // Check for specific error types
+      if (error instanceof Error) {
+        if (error.message.includes('Insufficient available amount')) {
+          res.status(400).json({
+            success: false,
+            message: error.message,
+            errorType: 'INSUFFICIENT_AMOUNT'
+          });
+        } else if (error.message.includes('Intervention not found')) {
+          res.status(404).json({
+            success: false,
+            message: error.message,
+            errorType: 'INTERVENTION_NOT_FOUND'
+          });
+        } else {
+          res.status(400).json({
+            success: false,
+            message: error.message,
+            errorType: 'UNKNOWN_ERROR'
+          });
+        }
+      } else {
+        next(error);
+      }
+    }
+  }
+);
+
+app.get(
+  '/api/claims',
+  authenticateToken,
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const claims = await prisma.carbonClaim.findMany({
+        where: {
+          claimingDomainId: req.user!.domainId,
+        },
+        include: {
+          intervention: true,
+          statement: true,
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
+
+      res.json({
+        success: true,
+        data: claims,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Helper function to generate PDF statement
+async function generateClaimStatement(claim: any, intervention: any): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([595.276, 841.890]); // A4 size
+
+  // Add content
+  const { width, height } = page.getSize();
+  
+  page.drawText('Carbon Reduction Claim Statement', {
+    x: 50,
+    y: height - 50,
+    size: 20,
+  });
+
+  const content = [
+    `Claim ID: ${claim.id}`,
+    `Intervention ID: ${intervention.interventionId}`,
+    `Amount Claimed: ${claim.amount} tCO2e`,
+    `Vintage: ${intervention.vintage}`,
+    `Valid Until: ${claim.expiryDate.toLocaleDateString()}`,
+    '',
+    'Intervention Details:',
+    `Type: ${intervention.modality}`,
+    `Geography: ${intervention.geography}`,
+    `Certification: ${intervention.certificationScheme}`,
+  ];
+
+  content.forEach((text, index) => {
+    page.drawText(text, {
+      x: 50,
+      y: height - 100 - (index * 25),
+      size: 12,
+      color: rgb(0, 0, 0),
+    });
+  });
+
+  return pdfDoc.save();
+}
+
 // File upload endpoint for interventions
 app.post(
   '/api/admin/upload-interventions',
@@ -893,17 +1257,16 @@ app.post(
       console.log('Processed interventions:', interventions.length);
       
       try {
-        const createdInterventions = await prisma.$transaction(
-          interventions.map(data => 
-            prisma.interventionRequest.create({ data })
-          )
-        );
-
-        console.log('Successfully created interventions:', createdInterventions.length);
-
+        const createdInterventions = await prisma.interventionRequest.createMany({
+          data: interventions,
+          skipDuplicates: true,
+        });
+        
+        console.log('Successfully created interventions:', createdInterventions.count);
+        
         res.json({
           success: true,
-          message: `Successfully created ${createdInterventions.length} interventions`,
+          message: `Successfully created ${createdInterventions.count} interventions`,
           data: createdInterventions,
         });
       } catch (err) {
@@ -977,6 +1340,9 @@ verifyEmailConfig().catch(console.error);
 // Graceful shutdown handler
 const gracefulShutdown = async (signal: string): Promise<void> => {
   console.log(`\n${signal} received. Starting graceful shutdown...`);
+
+  // Stop the claims expiration service
+  claimsExpirationService.stop();
 
   // Close database connections
   await prisma.$disconnect();

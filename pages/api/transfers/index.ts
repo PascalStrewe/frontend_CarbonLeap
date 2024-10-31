@@ -112,6 +112,15 @@ async function handleCreateTransfer(
           select: {
             domainId: true
           }
+        },
+        claims: {
+          where: {
+            status: 'active',
+            claimingDomainId: decoded.domainId,
+            expiryDate: {
+              gt: new Date()
+            }
+          }
         }
       }
     });
@@ -124,33 +133,18 @@ async function handleCreateTransfer(
       throw new Error('Not authorized to transfer this intervention');
     }
 
-    if (intervention.status !== 'verified') {
-      throw new Error('Can only transfer verified interventions');
-    }
+    // 2. Verify claimed amount
+    const totalClaimed = intervention.claims.reduce(
+      (sum, claim) => sum + claim.amount,
+      0
+    );
 
-    // 2. Calculate remaining amount
-    const existingTransfers = await tx.transfer.aggregate({
-      where: {
-        sourceInterventionId: interventionId,
-        status: {
-          in: ['pending', 'completed']
-        }
-      },
-      _sum: {
-        amount: true
-      }
-    });
-
-    const transferredAmount = parseFloat(existingTransfers._sum.amount || '0');
-    const availableAmount = parseFloat(intervention.scope3EmissionsAbated || '0') - transferredAmount;
-    const requestedAmount = parseFloat(amount);
-
-    if (requestedAmount > availableAmount) {
-      throw new Error(`Insufficient available amount. Available: ${availableAmount} tCO2e`);
+    if (totalClaimed < parseFloat(amount)) {
+      throw new Error(`Insufficient claimed amount. Available: ${totalClaimed} tCO2e`);
     }
 
     // 3. Create transfer
-    return tx.transfer.create({
+    const newTransfer = await tx.transfer.create({
       data: {
         sourceInterventionId: interventionId,
         sourceDomainId: decoded.domainId,
@@ -187,6 +181,22 @@ async function handleCreateTransfer(
         }
       }
     });
+
+    // 4. Update claim status if full amount is transferred
+    if (parseFloat(amount) === totalClaimed) {
+      await tx.carbonClaim.updateMany({
+        where: {
+          interventionId,
+          claimingDomainId: decoded.domainId,
+          status: 'active'
+        },
+        data: {
+          status: 'transferred'
+        }
+      });
+    }
+
+    return newTransfer;
   });
 
   return res.status(201).json(transfer);

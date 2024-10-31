@@ -1,4 +1,3 @@
-// src/components/Sidebar.tsx
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Link, useLocation } from 'react-router-dom';
@@ -11,6 +10,7 @@ import {
   RefreshCcw,
   Settings,
   Upload,
+  Shield, // Added for Claims
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -33,17 +33,22 @@ export default function Sidebar({ className }: SidebarProps) {
     {
       label: 'Dashboard',
       icon: Home,
-      href: '/dashboard',  // Changed from '/' to '/dashboard' to match App.tsx
+      href: '/dashboard',
     },
     {
       label: 'Intervention Requests',
       icon: FileText,
-      href: '/request',  // Changed from '/intervention-requests' to '/request' to match App.tsx
+      href: '/request',
+    },
+    {
+      label: 'Carbon Claims',  // New Claims route
+      icon: Shield,
+      href: '/claims',
     },
     {
       label: 'Carbon Transfers',
       icon: RefreshCcw,
-      href: '/transfers',  // Changed from '/carbon-transfer' to '/transfers' to match App.tsx
+      href: '/transfers',
     },
     {
       label: 'Partnerships',
@@ -63,7 +68,7 @@ export default function Sidebar({ className }: SidebarProps) {
     {
       label: 'Admin Upload',
       icon: Upload,
-      href: '/admin/upload',  // Changed from '/admin-upload' to '/admin/upload' to match App.tsx
+      href: '/admin/upload',
       adminOnly: true,
     },
     {
@@ -71,7 +76,7 @@ export default function Sidebar({ className }: SidebarProps) {
       icon: Settings,
       href: '/settings',
     },
-];
+  ];
 
   return (
     <div className={className}>

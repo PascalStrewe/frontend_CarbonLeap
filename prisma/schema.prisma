@@ -37,6 +37,7 @@ model Domain {
   partnershipsAsFirst     DomainPartnership[]      @relation("PartnershipDomain1")
   partnershipsAsSecond    DomainPartnership[]      @relation("PartnershipDomain2")
   notifications           Notification[]
+  claims                 CarbonClaim[]        @relation("DomainClaims")
 }
 
 model Intervention {
@@ -46,16 +47,16 @@ model Intervention {
 }
 
 model InterventionRequest {
-  id                        String    @id @default(cuid())
+  id                        String         @id @default(cuid())
   userId                    Int      
-  clientName                String    @default("Unknown Client")
-  emissionsAbated          Float     @default(0)
-  date                     DateTime   @default(now())
-  interventionId           String    @unique
+  clientName                String         @default("Unknown Client")
+  emissionsAbated          Float          @default(0)
+  date                     DateTime        @default(now())
+  interventionId           String         @unique
   modality                 String
   geography                String
-  additionality            Boolean   @default(false)
-  causality               Boolean    @default(false)
+  additionality            Boolean        @default(false)
+  causality               Boolean         @default(false)
   status                  String
   deliveryTicketNumber    String?
   materialName            String?
@@ -66,40 +67,61 @@ model InterventionRequest {
   amount                  Float?
   materialSustainabilityStatus Boolean?
   interventionType        String?
-  lowCarbonFuel          String    @default("n/a")  // biofuelProduct in frontend
+  lowCarbonFuel          String         @default("n/a")  // biofuelProduct in frontend
   baselineFuelProduct     String?
   typeOfVehicle          String?
-  feedstock              String    @default("n/a")  // typeOfFeedstock in frontend
+  feedstock              String         @default("n/a")  // typeOfFeedstock in frontend
   emissionReductionPercentage Float?
   intensityOfBaseline     String?
   intensityLowCarbonFuel  String?
-  certificationScheme     String    @default("n/a") // certification in frontend
+  certificationScheme     String         @default("n/a") // certification in frontend
   scope                   String?
   thirdPartyVerifier     String?
   standards              String?
-  
-  // Existing fields
-  vesselType               String?
-  lowCarbonFuelLiters      String?
-  lowCarbonFuelMT          String?
-  scope3EmissionsAbated    String?
-  ghgEmissionSaving        String
-  vintage                  String
-  thirdPartyVerification   String
+  vesselType             String?
+  lowCarbonFuelLiters    String?
+  lowCarbonFuelMT        String?
+  scope3EmissionsAbated  String?
+  ghgEmissionSaving      String
+  vintage                Int
+  thirdPartyVerification String
   otherCertificationScheme String?
-  notificationSent         Boolean    @default(false)
-  submissionDate           DateTime   @default(now())
-  reviewedAt               DateTime?
-  reviewedBy               String?
-  comments                 String?
-  remainingAmount          String     @default("0")
-
+  notificationSent       Boolean         @default(false)
+  submissionDate         DateTime        @default(now())
+  reviewedAt             DateTime?
+  reviewedBy             String?
+  comments               String?
+  totalAmount            Float           @default(0)
+  remainingAmount        Float           @default(0) 
+  
   // Relations
-  user                     User       @relation(fields: [userId], references: [id])
-  transfersOut             Transfer[] @relation("SourceIntervention")
+  user                   User            @relation(fields: [userId], references: [id])
+  transfersOut           Transfer[]      @relation("SourceIntervention")
+  claims                 CarbonClaim[]   // Add this relation
 
   @@index([status])
   @@index([clientName])
+}
+
+model CarbonClaim {
+  id               String              @id @default(cuid())
+  intervention     InterventionRequest @relation(fields: [interventionId], references: [interventionId])
+  interventionId   String
+  claimingDomain   Domain              @relation("DomainClaims", fields: [claimingDomainId], references: [id])
+  claimingDomainId Int
+  amount           Float               // Amount claimed in tCO2e
+  vintage          Int                 // Year of the vintage
+  expiryDate       DateTime            // When the claim expires
+  claimDate        DateTime            @default(now())
+  status           String              @default("active") // active, expired, revoked
+  statement        ClaimStatement?     // One-to-one relation with the statement
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([interventionId])
+  @@index([claimingDomainId])
+  @@index([vintage])
+  @@index([status])
 }
 
 
@@ -121,6 +143,16 @@ model Transfer {
 
   @@index([status])
   // Removed @@index([transferCode]) as there is no transferCode field
+}
+
+model ClaimStatement {
+  id              String       @id @default(cuid())
+  claim           CarbonClaim  @relation(fields: [claimId], references: [id])
+  claimId         String       @unique
+  pdfUrl          String       // URL to stored PDF
+  templateVersion String       // Version of template used
+  createdAt       DateTime     @default(now())
+  metadata        Json?        // Additional metadata about the statement
 }
 
 model Notification {
