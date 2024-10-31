@@ -1,5 +1,6 @@
 // src/components/Sidebar.tsx
 import React from 'react';
+import { useAuth } from '../context/AuthContext';
 import { Link, useLocation } from 'react-router-dom';
 import {
   BarChart3,
@@ -25,7 +26,8 @@ interface NavItem {
 
 export default function Sidebar({ className }: SidebarProps) {
   const location = useLocation();
-  const isAdmin = true; // Replace with your actual admin check
+  const { user } = useAuth();
+  const isAdmin = user?.isAdmin;
 
   const navItems: NavItem[] = [
     {

@@ -8,6 +8,9 @@ import bcrypt from 'bcryptjs';
 import { emailService } from './emailService';
 import 'dotenv/config';
 import { SecureSQLQueryService } from './services/SecureSQLQueryService';
+import multer from 'multer';
+import { parse as csvParse } from 'csv-parse';
+import { Readable } from 'stream';
 
 // Type definitions
 interface AuthRequest extends Request {
@@ -28,8 +31,42 @@ interface JWTPayload {
   domain: string;
 }
 
+interface CustomError extends Error {
+  code?: string;
+  status?: number;
+}
+
+interface InterventionRecord {
+  clientName?: string;
+  emissionsAbated?: string;
+  date: string;
+  interventionId: string;
+  modality: string;
+  geography: string;
+  additionality?: string;
+  causality?: string;
+  lowCarbonFuel?: string;
+  feedstock?: string;
+  certificationScheme?: string;
+}
+
 // Initialize Express app
 const app = express();
+
+// Configure multer with file filter
+const upload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype !== 'text/csv') {
+      cb(new Error('Only CSV files are allowed'));
+      return;
+    }
+    cb(null, true);
+  },
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+});
 
 // Basic JSON parsing (needs to be before routes)
 app.use(express.json({ limit: process.env.MAX_FILE_SIZE || '10mb' }));
@@ -69,11 +106,15 @@ prisma.$on('query', (e) => {
   }
 });
 
+// Email configuration verification
 async function verifyEmailConfig() {
   try {
     await emailService.verifyConfiguration();
+    console.log('Email configuration verified successfully');
   } catch (error) {
     console.error('Email configuration error:', error);
+    // Optional: throw error if email is critical for your application
+    // throw new Error('Failed to configure email service');
   }
 }
 
@@ -99,24 +140,26 @@ const authenticateToken = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction
-) => {
+): Promise<void> => {
   try {
     const authHeader = req.headers['authorization'];
     const token = authHeader?.split(' ')[1];
 
     if (!token) {
-      return res.status(401).json({
+      res.status(401).json({
         success: false,
         message: 'Access denied: No token provided',
       });
+      return;
     }
 
     jwt.verify(token, process.env.JWT_SECRET!, async (err, decoded) => {
       if (err) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: 'Access denied: Invalid token',
         });
+        return;
       }
 
       const user = await prisma.user.findUnique({
@@ -125,10 +168,11 @@ const authenticateToken = async (
       });
 
       if (!user) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: 'Access denied: User no longer exists',
         });
+        return;
       }
 
       req.user = {
@@ -144,18 +188,50 @@ const authenticateToken = async (
   } catch (error) {
     next(error);
   }
-});
+};
+
+// Validation middleware for intervention requests
+const validateInterventionRequest = (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): void => {
+  const requiredFields = [
+    'modality',
+    'geography',
+    'additionality',
+    'causality',
+    'clientName',
+    'emissionsAbated',
+    'date',
+    'interventionId',
+  ];
+
+  const missingFields = requiredFields.filter(
+    (field) => req.body[field] === undefined || req.body[field] === null
+  );
+
+  if (missingFields.length > 0) {
+    res.status(400).json({
+      success: false,
+      message: `Missing required fields: ${missingFields.join(', ')}`,
+    });
+    return;
+  }
+
+  next();
+};
 
 // Error handling middleware
 app.use(
   (
-    err: Error,
+    err: CustomError,
     _req: Request,
     res: Response,
     _next: NextFunction
-  ) => {
+  ): void => {
     console.error('Error:', err);
-    res.status(500).json({
+    res.status(err.status || 500).json({
       success: false,
       message:
         process.env.NODE_ENV === 'development'
@@ -167,7 +243,7 @@ app.use(
 );
 
 // Health check endpoint
-app.get('/api/health', (_req: Request, res: Response) => {
+app.get('/api/health', (_req: Request, res: Response): void => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -178,7 +254,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
 });
 
 // Test email endpoint
-app.post('/api/test-email', async (_req: Request, res: Response) => {
+app.post('/api/test-email', async (_req: Request, res: Response): Promise<void> => {
   try {
     console.log('Testing email configuration...');
 
@@ -205,15 +281,20 @@ app.post('/api/test-email', async (_req: Request, res: Response) => {
 });
 
 // Auth routes
-app.post('/api/login', async (req: Request, res: Response, next: NextFunction) => {
+app.post('/api/login', async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
   try {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({
+      res.status(400).json({
         success: false,
         message: 'Email and password are required',
       });
+      return;
     }
 
     const user = await prisma.user.findUnique({
@@ -222,18 +303,20 @@ app.post('/api/login', async (req: Request, res: Response, next: NextFunction) =
     });
 
     if (!user) {
-      return res.status(401).json({
+      res.status(401).json({
         success: false,
         message: 'Invalid credentials',
       });
+      return;
     }
 
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) {
-      return res.status(401).json({
+      res.status(401).json({
         success: false,
         message: 'Invalid credentials',
       });
+      return;
     }
 
     const token = jwt.sign(
@@ -268,22 +351,24 @@ app.post('/api/login', async (req: Request, res: Response, next: NextFunction) =
 app.post(
   '/api/domains',
   authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.user?.isAdmin) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: 'Admin access required',
         });
+        return;
       }
 
       const { companyName, domainName } = req.body;
 
       if (!companyName || !domainName) {
-        return res.status(400).json({
+        res.status(400).json({
           success: false,
           message: 'Company name and domain name are required',
         });
+        return;
       }
 
       const domain = await prisma.domain.create({
@@ -306,13 +391,14 @@ app.post(
 app.get(
   '/api/domains',
   authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.user?.isAdmin) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: 'Admin access required',
         });
+        return;
       }
 
       const domains = await prisma.domain.findMany({
@@ -341,22 +427,24 @@ app.get(
 app.post(
   '/api/users',
   authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.user?.isAdmin) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: 'Admin access required',
         });
+        return;
       }
 
       const { email, password, isAdmin, domainId } = req.body;
 
       if (!email || !password || !domainId) {
-        return res.status(400).json({
+        res.status(400).json({
           success: false,
           message: 'Email, password, and domainId are required',
         });
+        return;
       }
 
       const hashedPassword = await bcrypt.hash(password, 10);
@@ -383,13 +471,14 @@ app.post(
 app.get(
   '/api/users',
   authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.user?.isAdmin) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: 'Admin access required',
         });
+        return;
       }
 
       const users = await prisma.user.findMany({
@@ -412,32 +501,10 @@ app.get(
 app.post(
   '/api/intervention-requests',
   authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  validateInterventionRequest,
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       console.log('Processing intervention request:', req.body);
-
-      const requiredFields = [
-        'modality',
-        'geography',
-        'additionality',
-        'causality',
-        'clientName',
-        'emissionsAbated',
-        'date',
-        'interventionId',
-      ];
-
-      const missingFields = requiredFields.filter(
-        (field) =>
-          req.body[field] === undefined || req.body[field] === null
-      );
-
-      if (missingFields.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Missing required fields: ${missingFields.join(', ')}`,
-        });
-      }
 
       // Determine userId
       let userId = req.user!.id; // Default to authenticated user
@@ -455,18 +522,19 @@ app.post(
           if (domainUsers.length > 0) {
             userId = domainUsers[0].id; // Use the first user in the domain
           } else {
-            return res.status(400).json({
+            res.status(400).json({
               success: false,
               message: 'No users found for the specified domainId',
             });
+            return;
           }
         }
       } else if ((req.body.userId || req.body.domainId) && !req.user!.isAdmin) {
-        // Non-admins cannot specify userId or domainId
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: 'Access denied: Cannot specify userId or domainId',
         });
+        return;
       }
 
       // Prepare data for creation
@@ -484,7 +552,6 @@ app.post(
         lowCarbonFuel: req.body.lowCarbonFuel || 'n/a',
         feedstock: req.body.feedstock || 'n/a',
         certificationScheme: req.body.certificationScheme || 'n/a',
-        // Include any other fields as necessary
       };
 
       const interventionRequest = await prisma.interventionRequest.create({
@@ -492,9 +559,6 @@ app.post(
       });
 
       console.log('Intervention request created:', interventionRequest);
-
-      // Send email notification directly using the emailService
-      // (Optional: Implement email notifications if needed)
 
       res.status(200).json({
         success: true,
@@ -511,7 +575,7 @@ app.post(
 app.get(
   '/api/intervention-requests',
   authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       // If user is admin, get all requests
       // If not, only get requests for their user
@@ -536,18 +600,38 @@ app.get(
         },
       });
 
-      // Transform the data to match your frontend expectations
+      // Transform the data to match frontend expectations exactly
       const transformedRequests = requests.map((request) => ({
-        clientName: request.clientName || request.user.domain.companyName,
-        emissionsAbated: parseFloat(request.emissionsAbated || '0'),
-        date: request.date ? new Date(request.date).toLocaleDateString() : '',
-        interventionId: request.interventionId,
-        modality: request.modality,
-        geography: request.geography,
-        additionality: request.additionality,
-        causality: request.causality,
-        status: request.status.toLowerCase(),
-        standards: request.standards,
+        clientName: request.clientName || '',
+        emissionsAbated: request.emissionsAbated || 0,
+        date: request.date ? request.date.toLocaleDateString() : '',
+        interventionId: request.interventionId || '',
+        modality: request.modality || '',
+        geography: request.geography || '',
+        additionality: request.additionality ? 'Yes' : 'No',
+        causality: request.causality ? 'Yes' : 'No',
+        status: (request.status || '').toLowerCase(),
+        deliveryTicketNumber: request.deliveryTicketNumber || '',
+        materialName: request.materialName || '',
+        materialId: request.materialId || '',
+        vendorName: request.vendorName || '',
+        quantity: request.quantity || 0,
+        unit: request.unit || '',
+        amount: request.amount || 0,
+        materialSustainabilityStatus: request.materialSustainabilityStatus || false,
+        interventionType: request.interventionType || '',
+        biofuelProduct: request.lowCarbonFuel || '',
+        baselineFuelProduct: request.baselineFuelProduct || '',
+        typeOfVehicle: request.typeOfVehicle || '',
+        year: request.date ? new Date(request.date).getFullYear().toString() : '',
+        typeOfFeedstock: request.feedstock || '',
+        emissionReductionPercentage: request.emissionReductionPercentage || 0,
+        intensityOfBaseline: request.intensityOfBaseline || '',
+        intensityLowCarbonFuel: request.intensityLowCarbonFuel || '',
+        certification: request.certificationScheme || '',
+        scope: request.scope || '',
+        thirdPartyVerifier: request.thirdPartyVerifier || '',
+        standards: request.standards || ''
       }));
 
       res.json(transformedRequests);
@@ -561,13 +645,14 @@ app.get(
 app.get(
   '/api/admin/intervention-requests',
   authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.user?.isAdmin) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: 'Admin access required',
         });
+        return;
       }
 
       const requests = await prisma.interventionRequest.findMany({
@@ -602,13 +687,14 @@ app.get(
 app.patch(
   '/api/admin/intervention-requests/:id',
   authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.user?.isAdmin) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           message: 'Admin access required',
         });
+        return;
       }
 
       const { id } = req.params;
@@ -626,9 +712,6 @@ app.patch(
         },
       });
 
-      // Send email notification using the emailService
-      // (Optional: Implement email notifications if needed)
-
       res.json({
         success: true,
         data: updatedRequest,
@@ -639,19 +722,224 @@ app.patch(
   }
 );
 
+// File upload endpoint for interventions
+app.post(
+  '/api/admin/upload-interventions',
+  authenticateToken,
+  upload.single('file'),
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user?.isAdmin) {
+        res.status(403).json({
+          success: false,
+          message: 'Admin access required',
+        });
+        return;
+      }
+
+      if (!req.file) {
+        res.status(400).json({
+          success: false,
+          message: 'No file uploaded',
+        });
+        return;
+      }
+
+      const domainId = parseInt(req.body.domainId);
+      if (isNaN(domainId)) {
+        res.status(400).json({
+          success: false,
+          message: 'Valid domainId is required',
+        });
+        return;
+      }
+
+      console.log('Processing file upload for domainId:', domainId);
+
+      // Process CSV file
+      const records: Array<{[key: string]: string}> = [];
+      const parser = csvParse({
+        columns: true,
+        skip_empty_lines: true,
+        trim: true,
+        skip_records_with_empty_values: true,
+        bom: true,
+        delimiter: ';', // Explicitly set semicolon as delimiter
+        relaxColumnCount: true, // Add some flexibility to column counting
+        fromLine: 1 // Start from first line
+      });
+
+      // Add record validation
+      let currentLine = 1;
+      parser.on('readable', () => {
+        let record;
+        while ((record = parser.read())) {
+          currentLine++;
+          // Validate record has required fields
+          if (!record['INTERVENTION ID'] || !record['DELIVERY DATE']) {
+            console.warn(`Skipping line ${currentLine} due to missing required fields`);
+            continue;
+          }
+          records.push(record);
+        }
+      });
+
+      parser.on('error', (error) => {
+        console.error('CSV parsing error on line', currentLine, ':', error);
+      });
+
+      const processPromise = new Promise<void>((resolve, reject) => {
+        parser.on('readable', () => {
+          let record;
+          while ((record = parser.read())) {
+            records.push(record);
+          }
+        });
+        
+        parser.on('error', (error) => {
+          console.error('CSV parsing error:', error);
+          reject(error);
+        });
+        
+        parser.on('end', () => resolve());
+      });
+
+      // Create readable stream from buffer
+      const bufferStream = new Readable();
+      bufferStream.push(req.file.buffer);
+      bufferStream.push(null);
+      bufferStream.pipe(parser);
+
+      await processPromise;
+      
+      console.log('Parsed records:', records.length);
+      if (records.length > 0) {
+        console.log('Sample record:', JSON.stringify(records[0], null, 2));
+      }
+
+      // Function to parse date in MM/DD/YYYY format
+      const parseDate = (dateStr: string): Date => {
+        try {
+          if (!dateStr) throw new Error('Date string is empty');
+          const [month, day, year] = dateStr.split('/').map(num => parseInt(num));
+          const date = new Date(year, month - 1, day);
+          if (isNaN(date.getTime())) throw new Error('Invalid date');
+          return date;
+        } catch (err) {
+          console.error('Date parsing error for:', dateStr);
+          throw err;
+        }
+      };
+
+      // Validate and transform records
+      const interventions = records.map((record) => {
+        try {
+          const interventionId = record['INTERVENTION ID'];
+          if (!interventionId) {
+            throw new Error('INTERVENTION ID is required');
+          }
+
+          const dateStr = record['DELIVERY DATE'];
+          if (!dateStr) {
+            throw new Error('DELIVERY DATE is required');
+          }
+
+          // Map CSV columns to database fields with proper type conversion
+          const interventionData = {
+            userId: req.user!.id,
+            clientName: record['CLIENT NAME'] || 'Unknown Client',
+            emissionsAbated: parseFloat(record['EMISSIONS ABATED'] || '0'),
+            date: parseDate(dateStr),
+            interventionId,
+            deliveryTicketNumber: record['DELIVERY TICKET NUMBER'] || '',
+            materialName: record['MATERIAL NAME'] || '',
+            materialId: record['MATERIAL ID'] || '',
+            vendorName: record['VENDOR NAME'] || '',
+            quantity: parseFloat(record['QUANTITY'] || '0'),
+            unit: record['UNIT'] || '',
+            amount: parseFloat(record['AMOUNT [L]'] || '0'),
+            materialSustainabilityStatus: record['MATERIAL SUSTAINABILITY STATUS']?.toLowerCase() === 'true',
+            modality: record['MODALITY'] || 'Unknown',
+            interventionType: record['INTERVENTION TYPE'] || '',
+            lowCarbonFuel: record['BIOFUEL PRODUCT'] || 'n/a',
+            baselineFuelProduct: record['BASELINE FUEL PRODUCT'] || '',
+            typeOfVehicle: record['TYPE OF VEHICLE'] || '',
+            feedstock: record['TYPE OF FEEDSTOCK'] || 'n/a',
+            geography: record['GEOGRAPHY'] || 'Unknown',
+            emissionReductionPercentage: parseFloat(record['%_EMISSION_REDUCTION'] || '0'),
+            intensityOfBaseline: record['INTENSITY_OF_BASELINE'] || '',
+            intensityLowCarbonFuel: record['INTENSITY_LOW-CARBON_FUEL'] || '',
+            certificationScheme: record['CERTIFICATION'] || 'n/a',
+            scope: record['SCOPE'] || '',
+            thirdPartyVerifier: record['THIRD PARTY VERIFIER'] || '',
+            causality: /^(yes|true|1)$/i.test(record['CAUSALITY'] || ''),
+            additionality: /^(yes|true|1)$/i.test(record['ADDITIONALITY'] || ''),
+            standards: record['STANDARDS'] || '',
+            status: 'Verified',
+            submissionDate: new Date(),
+            ghgEmissionSaving: '0',
+            vintage: new Date().getFullYear().toString(),
+            thirdPartyVerification: 'Pending',
+            remainingAmount: '0'
+          };
+
+          return interventionData;
+        } catch (err) {
+          console.error('Error processing record:', record);
+          throw err;
+        }
+      });
+
+      console.log('Processed interventions:', interventions.length);
+      
+      try {
+        const createdInterventions = await prisma.$transaction(
+          interventions.map(data => 
+            prisma.interventionRequest.create({ data })
+          )
+        );
+
+        console.log('Successfully created interventions:', createdInterventions.length);
+
+        res.json({
+          success: true,
+          message: `Successfully created ${createdInterventions.length} interventions`,
+          data: createdInterventions,
+        });
+      } catch (err) {
+        console.error('Database error:', err);
+        throw err;
+      }
+    } catch (error) {
+      console.error('Error processing file upload:', error);
+      if (error instanceof Error) {
+        res.status(500).json({
+          success: false,
+          message: 'Error processing file upload',
+          error: error.message,
+          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+      } else {
+        next(error);
+      }
+    }
+  }
+);
+
 // Chat with data route
 app.post(
   '/api/chat-with-data',
   authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction) => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       const { question } = req.body;
 
       if (!question) {
-        return res.status(400).json({
+        res.status(400).json({
           success: false,
           message: 'Question is required',
         });
+        return;
       }
 
       const queryService = new SecureSQLQueryService({
@@ -676,7 +964,7 @@ app.post(
 );
 
 // Error handling for unhandled routes
-app.use((_req: Request, res: Response) => {
+app.use((_req: Request, res: Response): void => {
   res.status(404).json({
     success: false,
     message: 'Route not found',
@@ -687,7 +975,7 @@ app.use((_req: Request, res: Response) => {
 verifyEmailConfig().catch(console.error);
 
 // Graceful shutdown handler
-const gracefulShutdown = async (signal: string) => {
+const gracefulShutdown = async (signal: string): Promise<void> => {
   console.log(`\n${signal} received. Starting graceful shutdown...`);
 
   // Close database connections

@@ -1,53 +1,65 @@
 // src/context/InterventionContext.tsx
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+} from 'react';
+import axios from 'axios';
 
-type InterventionData = {
+// Define the shape of your intervention data
+export interface InterventionData {
   clientName: string;
   emissionsAbated: number;
-  date: string;
+  date: string; // ISO format
   interventionId: string;
   modality: string;
   geography: string;
   additionality: boolean;
   causality: boolean;
   status: string;
-  deliveryTicketNumber: string;
-  materialName: string;
-  materialId: string;
-  vendorName: string;
-  quantity: number;
-  unit: string;
-  amount: number;
-  materialSustainabilityStatus: boolean;
-  interventionType: string;
-  biofuelProduct: string;
-  baselineFuelProduct: string;
-  typeOfVehicle: string;
-  year: string;
-  typeOfFeedstock: string;
-  emissionReductionPercentage: number;
-  intensityOfBaseline: string;
-  intensityLowCarbonFuel: string;
-  certification: string;
-  scope: string;
-  thirdPartyVerifier: string;
-  standards: string;
-};
+  lowCarbonFuel: string; // Defaults to "n/a" if missing
+  feedstock: string; // Defaults to "n/a" if missing
+  certificationScheme: string; // Defaults to "n/a" if missing
+  // Add other fields as necessary
+}
 
-type InterventionContextType = {
+// Define the context type
+interface InterventionContextType {
   interventionData: InterventionData[];
   addInterventions: (newData: InterventionData[]) => void;
   clearInterventions: () => void;
   refreshInterventions: () => void;
   error: string | null;
   isLoading: boolean;
+}
+
+// Create the context
+const InterventionContext = createContext<InterventionContextType | undefined>(
+  undefined
+);
+
+// Custom hook to use the InterventionContext
+export const useInterventions = (): InterventionContextType => {
+  const context = useContext(InterventionContext);
+  if (context === undefined) {
+    throw new Error(
+      'useInterventions must be used within an InterventionProvider'
+    );
+  }
+  return context;
 };
 
-const InterventionContext = createContext<InterventionContextType | undefined>(undefined);
-
-export const InterventionProvider = ({ children }: { children: React.ReactNode }) => {
-  const [interventionData, setInterventionData] = useState<InterventionData[]>([]);
+// Provider component
+export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
+  const [interventionData, setInterventionData] = useState<InterventionData[]>(
+    []
+  );
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
@@ -56,7 +68,6 @@ export const InterventionProvider = ({ children }: { children: React.ReactNode }
     try {
       const payload = token.split('.')[1];
       const decoded = JSON.parse(atob(payload));
-      // Check if the 'exp' claim exists
       if (!decoded.exp) {
         return true;
       }
@@ -66,7 +77,8 @@ export const InterventionProvider = ({ children }: { children: React.ReactNode }
     }
   };
 
-  const fetchInterventions = async () => {
+  // Memoized function to fetch interventions
+  const fetchInterventions = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
@@ -77,119 +89,88 @@ export const InterventionProvider = ({ children }: { children: React.ReactNode }
       }
 
       console.log('Fetching interventions...');
-      const response = await fetch('http://localhost:3001/api/intervention-requests', {
+      const response = await axios.get('/api/intervention-requests', {
         headers: {
-          'Authorization': `Bearer ${token}`
-        }
+          Authorization: `Bearer ${token}`,
+        },
       });
 
-      if (response.status === 403) {
-        localStorage.removeItem('token');
-        throw new Error('Access forbidden. Please log in again.');
-      }
+      // Assuming the backend returns an array of interventions
+      const data: InterventionData[] = response.data;
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-
-      // Transform the data to match InterventionData type if needed
-      const transformedData: InterventionData[] = data.map((item: any) => ({
-        clientName: item.clientName || '',
-        emissionsAbated: parseFloat(item.scope3EmissionsAbated || '0'),
-        date: item.submissionDate ? new Date(item.submissionDate).toLocaleDateString() : new Date().toLocaleDateString(),
-        interventionId: item.id?.toString() || item.interventionId || '',
-        modality: item.modality || '',
-        geography: item.geography || '',
-        additionality: item.additionality === 'Yes',
-        causality: item.causality === 'Yes',
-        status: (item.status || '').toLowerCase(),
-        deliveryTicketNumber: item.deliveryTicketNumber || '',
-        materialName: item.materialName || '',
-        materialId: item.materialId || '',
-        vendorName: item.vendorName || '',
-        quantity: item.quantity || 0,
-        unit: item.unit || '',
-        amount: item.amount || 0,
-        materialSustainabilityStatus: item.materialSustainabilityStatus || false,
-        interventionType: item.interventionType || '',
-        biofuelProduct: item.biofuelProduct || '',
-        baselineFuelProduct: item.baselineFuelProduct || '',
-        typeOfVehicle: item.typeOfVehicle || '',
-        year: item.year || '',
-        typeOfFeedstock: item.typeOfFeedstock || '',
-        emissionReductionPercentage: parseFloat(item.emissionReductionPercentage || '0'),
-        intensityOfBaseline: item.intensityOfBaseline || '',
-        intensityLowCarbonFuel: item.intensityLowCarbonFuel || '',
-        certification: item.certification || '',
-        scope: item.scope || '',
-        thirdPartyVerifier: item.thirdPartyVerifier || '',
-        standards: item.standards || ''
-      }));
-
-      console.log('Transformed intervention data:', transformedData);
-      console.log('Status of interventions:', transformedData.map(item => ({
-        id: item.interventionId,
-        status: item.status,
-        clientName: item.clientName
-      })));
-
-      setInterventionData(transformedData);
-      localStorage.setItem('interventionData', JSON.stringify(transformedData));
-    } catch (error) {
-      console.error('Error loading data:', error);
-      setError(error instanceof Error ? error.message : 'Failed to fetch data');
+      console.log('Fetched interventions:', data);
+      setInterventionData(data);
+      localStorage.setItem('interventionData', JSON.stringify(data));
+    } catch (err: any) {
+      console.error('Error fetching interventions:', err);
+      setError(
+        err.response?.data?.message ||
+          err.message ||
+          'Failed to fetch intervention data'
+      );
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  // Fetch data initially and set up interval to refresh
+  // Memoized function to refresh interventions
+  const refreshInterventions = useCallback(() => {
+    fetchInterventions();
+  }, [fetchInterventions]);
+
+  // Function to add new interventions without duplicates
+  const addInterventions = useCallback((newData: InterventionData[]) => {
+    setInterventionData((prevData) => {
+      const existingIds = new Set(prevData.map((item) => item.interventionId));
+      const filteredNewData = newData.filter(
+        (item) => !existingIds.has(item.interventionId)
+      );
+      const updatedData = [...prevData, ...filteredNewData];
+      localStorage.setItem('interventionData', JSON.stringify(updatedData));
+      return updatedData;
+    });
+  }, []);
+
+  // Function to clear all interventions
+  const clearInterventions = useCallback(() => {
+    setInterventionData([]);
+    localStorage.removeItem('interventionData');
+  }, []);
+
+  // Initial data fetch and setting up the refresh interval
   useEffect(() => {
     fetchInterventions();
 
-    // Refresh data every 30 seconds
-    const interval = setInterval(fetchInterventions, 30000);
+    const interval = setInterval(() => {
+      fetchInterventions();
+    }, 30000); // Refresh every 30 seconds
 
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchInterventions]);
 
-  const addInterventions = (newData: InterventionData[]) => {
-    setInterventionData(prev => {
-      // Filter out duplicates based on interventionId
-      const existingIds = new Set(prev.map(item => item.interventionId));
-      const filteredNewData = newData.filter(item => !existingIds.has(item.interventionId));
-      return [...prev, ...filteredNewData];
-    });
-  };
-
-  const clearInterventions = () => {
-    setInterventionData([]);
-  };
-
-  const refreshInterventions = () => {
-    fetchInterventions();
-  };
-
-  return (
-    <InterventionContext.Provider value={{ 
-      interventionData, 
-      addInterventions, 
+  // Memoize the context value to prevent unnecessary re-renders
+  const contextValue = useMemo(
+    () => ({
+      interventionData,
+      addInterventions,
       clearInterventions,
       refreshInterventions,
       error,
-      isLoading
-    }}>
+      isLoading,
+    }),
+    [
+      interventionData,
+      addInterventions,
+      clearInterventions,
+      refreshInterventions,
+      error,
+      isLoading,
+    ]
+  );
+
+  return (
+    <InterventionContext.Provider value={contextValue}>
       {children}
     </InterventionContext.Provider>
   );
-};
-
-export const useInterventions = () => {
-  const context = useContext(InterventionContext);
-  if (context === undefined) {
-    throw new Error('useInterventions must be used within an InterventionProvider');
-  }
-  return context;
 };

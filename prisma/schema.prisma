@@ -47,44 +47,61 @@ model Intervention {
 
 model InterventionRequest {
   id                        String    @id @default(cuid())
-  userId                    Int       // Made required by removing the ?
-  
-  // **New Fields Added as Nullable to Facilitate Migration**
-  clientName                String?   // Will be set to non-nullable in a subsequent migration
-  emissionsAbated           Float?    // Will be set to non-nullable in a subsequent migration
-  date                      DateTime? // Will be set to non-nullable in a subsequent migration
-  interventionId            String?   @unique // Will be set to non-nullable in a subsequent migration
-  
-  modality                  String
-  vesselType               String?
+  userId                    Int      
+  clientName                String    @default("Unknown Client")
+  emissionsAbated          Float     @default(0)
+  date                     DateTime   @default(now())
+  interventionId           String    @unique
+  modality                 String
   geography                String
+  additionality            Boolean   @default(false)
+  causality               Boolean    @default(false)
+  status                  String
+  deliveryTicketNumber    String?
+  materialName            String?
+  materialId              String?
+  vendorName              String?
+  quantity                Float?
+  unit                    String?
+  amount                  Float?
+  materialSustainabilityStatus Boolean?
+  interventionType        String?
+  lowCarbonFuel          String    @default("n/a")  // biofuelProduct in frontend
+  baselineFuelProduct     String?
+  typeOfVehicle          String?
+  feedstock              String    @default("n/a")  // typeOfFeedstock in frontend
+  emissionReductionPercentage Float?
+  intensityOfBaseline     String?
+  intensityLowCarbonFuel  String?
+  certificationScheme     String    @default("n/a") // certification in frontend
+  scope                   String?
+  thirdPartyVerifier     String?
+  standards              String?
+  
+  // Existing fields
+  vesselType               String?
   lowCarbonFuelLiters      String?
   lowCarbonFuelMT          String?
   scope3EmissionsAbated    String?
   ghgEmissionSaving        String
   vintage                  String
-  lowCarbonFuel            String    @default("n/a")
-  feedstock                String    @default("n/a")
-  causality                Boolean?  // Changed to Boolean and nullable for migration
-  additionality            Boolean?  // Changed to Boolean and nullable for migration
   thirdPartyVerification   String
-  certificationScheme      String    @default("n/a")
   otherCertificationScheme String?
-  standards                String
-  status                   String
   notificationSent         Boolean    @default(false)
   submissionDate           DateTime   @default(now())
   reviewedAt               DateTime?
   reviewedBy               String?
   comments                 String?
-  transfersOut             Transfer[] @relation("SourceIntervention")
-  remainingAmount          String     @default("0") // Track remaining transferable amount
+  remainingAmount          String     @default("0")
 
+  // Relations
   user                     User       @relation(fields: [userId], references: [id])
+  transfersOut             Transfer[] @relation("SourceIntervention")
 
   @@index([status])
-  @@index([clientName]) // Added index for clientName for faster queries
+  @@index([clientName])
 }
+
 
 model Transfer {
   id                    String              @id @default(cuid())

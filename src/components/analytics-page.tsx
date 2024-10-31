@@ -1,6 +1,7 @@
 // C:/Users/PascalStrewe/Downloads/frontend_CarbonLeap/src/components/analytics-page.tsx
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
+
 import { 
   Download, 
   Filter, 
@@ -100,7 +101,11 @@ const CustomTooltip: React.FC<CustomTooltipProps> = ({ active, payload, label })
 };
 
 const ReportingPage: React.FC = () => {
-  const { interventionData } = useInterventions();
+  const { interventionData, refreshInterventions } = useInterventions();
+  useEffect(() => {
+    refreshInterventions();
+  }, [refreshInterventions]);
+
   const [filters, setFilters] = useState<FilterState>({
     dateRange: { start: '', end: '' },
     modality: 'all',

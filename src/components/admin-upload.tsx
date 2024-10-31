@@ -9,11 +9,14 @@ import {
   Eye, 
   Save, 
   Download,
-  FileUp
+  FileUp,
+  Search  
 } from 'lucide-react';
 import { useInterventions } from '../context/InterventionContext';
 import Sidebar from './Sidebar';
 import axios from 'axios'; // Import axios for HTTP requests
+import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
 
 // Define an interface for Intervention Data for better type safety
 interface InterventionData {
@@ -31,6 +34,12 @@ interface InterventionData {
   certificationScheme: string; // Defaults to "n/a" if missing
 }
 
+interface Domain {
+  id: number;
+  name: string;
+  companyName: string;
+}
+
 interface User {
   id: number;
   email: string;
@@ -41,32 +50,52 @@ interface User {
 }
 
 const AdminUpload = () => {
-  const { addInterventions } = useInterventions();
+  const { addInterventions, refreshInterventions } = useInterventions();
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const [dragActive, setDragActive] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
-  const [processedData, setProcessedData] = useState<InterventionData[]>([]);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [preview, setPreview] = useState<InterventionData[]>([]);
+  const [domains, setDomains] = useState<Domain[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedDomain, setSelectedDomain] = useState<Domain | null>(null);
+  const [filteredDomains, setFilteredDomains] = useState<Domain[]>([]);
+  const [processedData, setProcessedData] = useState<InterventionData[]>([]);
   const [skippedRows, setSkippedRows] = useState<{ row: number; reason: string; content: string }[]>([]);
-  const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
-  const [users, setUsers] = useState<User[]>([]);
 
-  // Fetch the list of users when the component mounts
   useEffect(() => {
-    const fetchUsers = async () => {
+    if (!user?.isAdmin) {
+      navigate('/dashboard');
+      return;
+    }
+
+    const fetchDomains = async () => {
       try {
-        const response = await axios.get('/api/admin/users');
-        setUsers(response.data.data);
+        const response = await axios.get('/api/domains', {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`
+          }
+        });
+        setDomains(response.data.data);
       } catch (err) {
-        console.error('Failed to fetch users:', err);
-        setError('Failed to fetch users.');
+        console.error('Failed to fetch domains:', err);
+        setError('Failed to fetch domains');
       }
     };
 
-    fetchUsers();
-  }, []);
+    fetchDomains();
+  }, [user, navigate]);
+
+  useEffect(() => {
+    const filtered = domains.filter(domain => 
+      domain.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      domain.companyName.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+    setFilteredDomains(filtered);
+  }, [searchTerm, domains]);
 
   // Function to parse various date formats into ISO format
   const parseDate = (dateStr: string): string => {
@@ -247,84 +276,78 @@ const AdminUpload = () => {
 
   // Function to process the uploaded file
   const processFile = useCallback(async (file: File) => {
-    if (!selectedUserId) {
-      setError('Please select a user to attribute the data to.');
+    if (!selectedDomain) {
+      setError('Please select a domain first.');
       return;
     }
-
+  
     setProcessing(true);
     setError('');
     setSuccess('');
     setPreview([]);
-    setSkippedRows([]);
     
     const reader = new FileReader();
     
     reader.onload = async (e) => {
       try {
         const text = e.target?.result as string;
-        const data = parseCSV(text);
+        const data = parseCSV(text);  // Parse the CSV data first
         setProcessedData(data);
         setPreview(data.slice(0, 5));
-
-        // Send data to the server
-        const uploadPromises = data.map((intervention, index) => {
-          const dataToSend = {
-            ...intervention,
-            userId: selectedUserId, // Include the userId selected by the admin
-          };
-          return axios.post('/api/intervention-requests', dataToSend)
-            .then(response => ({ status: 'fulfilled', data: response.data }))
-            .catch(error => {
-              const message = error.response?.data?.message || error.message || 'Unknown error';
-              return { status: 'rejected', reason: message, intervention };
-            });
-        });
-
-        // Use Promise.allSettled to handle all upload promises
-        const results = await Promise.all(uploadPromises);
-
-        const fulfilled = results.filter(result => result.status === 'fulfilled').length;
-        const rejected = results.filter(result => result.status === 'rejected').length;
-
-        // Collect skipped rows based on failed uploads
-        const skipped: { row: number; reason: string; content: string }[] = [];
-        results.forEach((result, index) => {
-          if (result.status === 'rejected') {
-            skipped.push({
-              row: index + 2, // +2 to account for header and zero-based index
-              reason: result.reason,
-              content: JSON.stringify(result.intervention, null, 2)
-            });
+  
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('domainId', selectedDomain.id.toString());
+  
+        try {
+          const response = await axios.post('/api/admin/upload-interventions', formData, {
+            headers: {
+              'Content-Type': 'multipart/form-data',
+              Authorization: `Bearer ${localStorage.getItem('token')}`
+            }
+          });
+  
+          if (response.data.success) {
+            setSuccess(`Successfully uploaded interventions for ${selectedDomain.companyName}`);
+            // Ensure refresh is complete before showing success
+            await refreshInterventions();
+            
+            setFiles([]);
+            setProcessedData([]);
+            setPreview([]);
+            
+            // Ensure data is refreshed everywhere
+            await refreshInterventions();
+            
+            // Add a second refresh after a delay to ensure all data is updated
+            setTimeout(async () => {
+              await refreshInterventions();
+            }, 2000);
           }
-        });
-
-        setSkippedRows(skipped);
-
-        if (fulfilled > 0) {
-          // Update frontend state after successful uploads
-          addInterventions(data.filter((_, index) => results[index].status === 'fulfilled'));
-          setSuccess(`Successfully processed and uploaded ${fulfilled} record${fulfilled > 1 ? 's' : ''}${rejected > 0 ? `, with ${rejected} record(s) failed.` : ''}.`);
+        } catch (err) {
+          if (axios.isAxiosError(err) && err.response) {
+            console.error('Server response error:', err.response.data);
+            setError(err.response.data.message || err.response.data.error || 'Failed to upload file');
+          } else {
+            console.error('Upload error:', err);
+            setError('Failed to upload file');
+          }
         }
-
-        if (rejected > 0) {
-          setError(`${rejected} record(s) failed to upload. Please check the skipped rows report.`);
-        }
-      } catch (err: any) {
-        console.error('Error processing file:', err);
-        setError(`Error processing file: ${err.message}`);
+      } catch (err) {
+        console.error('CSV parsing error:', err);
+        setError(err instanceof Error ? err.message : 'Failed to parse CSV file');
       } finally {
         setProcessing(false);
       }
     };
-
+  
     reader.onerror = () => {
       setError('Error reading file');
       setProcessing(false);
     };
-
+  
     reader.readAsText(file);
-  }, [parseCSV, addInterventions, selectedUserId]);
+  }, [selectedDomain, refreshInterventions, parseCSV]);
 
   // Handlers for drag and drop events
   const handleDrag = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -412,22 +435,52 @@ const AdminUpload = () => {
             {/* User Selection */}
             <div className="mt-4">
               <label className="block text-sm font-medium text-[#103D5E] mb-1">
-                Select User to Attribute Data To
+                Select Domain
               </label>
-              <select
-                className="block w-full p-2 border border-gray-300 rounded-md"
-                value={selectedUserId || ''}
-                onChange={(e) => setSelectedUserId(parseInt(e.target.value))}
-              >
-                <option value="" disabled>
-                  Select a user
-                </option>
-                {users.map((user) => (
-                  <option key={user.id} value={user.id}>
-                    {user.email} - {user.domain.companyName}
-                  </option>
-                ))}
-              </select>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-[#103D5E]/40" />
+                <input
+                  type="text"
+                  placeholder="Search domains..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 bg-white/50 border border-white/20 rounded-lg 
+                    focus:outline-none focus:ring-1 focus:ring-[#103D5E] text-[#103D5E]"
+                />
+              </div>
+              
+              {filteredDomains.length > 0 && searchTerm && !selectedDomain && (
+                <div className="mt-2 bg-white/50 rounded-lg border border-white/20 max-h-48 overflow-y-auto">
+                  {filteredDomains.map(domain => (
+                    <button
+                      key={domain.id}
+                      onClick={() => {
+                        setSelectedDomain(domain);
+                        setSearchTerm('');
+                      }}
+                      className="w-full px-4 py-2 text-left hover:bg-white/50 text-[#103D5E]"
+                    >
+                      <div className="font-medium">{domain.companyName}</div>
+                      <div className="text-sm text-[#103D5E]/70">{domain.name}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {selectedDomain && (
+                <div className="mt-4 flex items-center justify-between bg-white/50 p-4 rounded-lg">
+                  <div>
+                    <div className="font-medium text-[#103D5E]">{selectedDomain.companyName}</div>
+                    <div className="text-sm text-[#103D5E]/70">{selectedDomain.name}</div>
+                  </div>
+                  <button
+                    onClick={() => setSelectedDomain(null)}
+                    className="text-red-500 hover:text-red-700"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Upload Zone */}

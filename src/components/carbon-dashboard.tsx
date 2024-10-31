@@ -20,6 +20,7 @@ import { useAuth } from '../context/AuthContext';
 import { useInterventions } from '../context/InterventionContext';
 import Sidebar from './Sidebar';
 
+
 interface Intervention {
   date: string;
   emissionsAbated: number;

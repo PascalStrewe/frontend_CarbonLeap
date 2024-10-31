@@ -30,10 +30,6 @@ export default function ChatWithData() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    refreshInterventions();
-  }, []);
-
-  useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
