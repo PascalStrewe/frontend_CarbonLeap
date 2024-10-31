@@ -112,18 +112,32 @@ const CarbonClaims = () => {
 
   const handlePreviewStatement = async (claim: Claim) => {
     try {
+      console.log('Attempting to preview claim:', {
+        id: claim.id,
+        interventionId: claim.interventionId
+      });
+  
       const response = await fetch(`http://localhost:3001/api/claims/${claim.id}/preview-statement`, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
       });
       
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        setPreviewUrl(url);
-        setIsPreviewModalOpen(true);
+      if (!response.ok) {
+        // Try to get error details
+        try {
+          const errorData = await response.json();
+          console.error('Preview error details:', errorData);
+        } catch {
+          console.error('Preview error status:', response.status);
+        }
+        throw new Error('Failed to preview statement');
       }
+      
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      setPreviewUrl(url);
+      setIsPreviewModalOpen(true);
     } catch (error) {
       console.error('Error previewing statement:', error);
     }
@@ -302,7 +316,7 @@ const CarbonClaims = () => {
                     ))}
                   </tbody>
                 </table>
-                
+
                 {/* Add preview modal */}
                 {isPreviewModalOpen && previewUrl && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">

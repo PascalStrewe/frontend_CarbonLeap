@@ -1448,6 +1448,97 @@ app.post(
   }
 );
 
+// Preview claim statement endpoint
+// Add this BEFORE the error handling middleware
+app.get('/api/claims/:id/preview-statement', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  console.log('Received preview request for claim:', req.params.id);
+  try {
+    const claimId = req.params.id;
+
+    // Log the search criteria
+    console.log('Searching for claim with criteria:', {
+      id: claimId,
+      domainId: req.user?.domainId
+    });
+
+    // First check if claim exists at all
+    const claimExists = await prisma.carbonClaim.findUnique({
+      where: { id: claimId },
+    });
+
+    console.log('Claim exists?:', !!claimExists);
+
+    if (!claimExists) {
+      console.log('Claim not found with ID:', claimId);
+      res.status(404).json({
+        success: false,
+        message: 'Claim not found',
+      });
+      return;
+    }
+
+    // Fetch full claim data with relations
+    const claim = await prisma.carbonClaim.findFirst({
+      where: { 
+        id: claimId,
+        claimingDomainId: req.user!.domainId 
+      },
+      include: {
+        intervention: true,
+        claimingDomain: true,
+        statement: true
+      }
+    });
+
+    console.log('Found claim data:', {
+      exists: !!claim,
+      id: claim?.id,
+      domainId: claim?.claimingDomainId,
+      hasIntervention: !!claim?.intervention,
+      hasDomain: !!claim?.claimingDomain
+    });
+
+    if (!claim) {
+      res.status(403).json({
+        success: false,
+        message: 'Access denied or claim not found',
+      });
+      return;
+    }
+
+    // Get domain information
+    const domain = await prisma.domain.findUnique({
+      where: { id: req.user!.domainId },
+    });
+
+    if (!domain) {
+      res.status(404).json({
+        success: false,
+        message: 'Domain not found',
+      });
+      return;
+    }
+
+    // Generate preview PDF
+    const pdfBuffer = await pdfTemplateService.generateClaimStatement(
+      claim,
+      claim.intervention,
+      claim.claimingDomain
+    );
+
+    // Set response headers
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename=claim-preview.pdf');
+    
+    // Send the PDF
+    res.send(Buffer.from(pdfBuffer));
+
+  } catch (error) {
+    console.error('Error in preview-statement endpoint:', error);
+    next(error);
+  }
+});
+
 // Error handling for unhandled routes
 app.use((_req: Request, res: Response): void => {
   res.status(404).json({
@@ -1484,6 +1575,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Start server
 const PORT = process.env.PORT || 3001;
+
 const server = app.listen(PORT, () => {
   console.log(
     `Server running in ${
