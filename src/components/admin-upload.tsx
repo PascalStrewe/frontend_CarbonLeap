@@ -332,6 +332,7 @@ const AdminUpload = () => {
     setPreview([]);
     
     const reader = new FileReader();
+    setError('');
     
     reader.onload = async (e) => {
       try {
@@ -544,6 +545,7 @@ const AdminUpload = () => {
                     <button
                       key={domain.id}
                       onClick={() => {
+                        setError('');
                         setSelectedDomain(domain);
                         setSearchTerm('');
                       }}
