@@ -13,6 +13,8 @@ import {
 import { useAuth } from '../context/AuthContext';
 import Sidebar from './Sidebar';
 import PartnershipRequestModal from './partnership-request-modal';
+import Navigation from './Navigation';
+
 
 interface Partnership {
   id: number;
@@ -42,7 +44,7 @@ const PartnershipManagement: React.FC = () => {
   useEffect(() => {
     const fetchPartnerships = async () => {
       try {
-        const response = await fetch('http://localhost:3001/api/partnerships', {
+        const response = await fetch('/api/partnerships', {
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('token')}`
           }
@@ -61,9 +63,9 @@ const PartnershipManagement: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const handleRequestPartnership = async (data: { partnerEmail: string; message: string }) => {
+  const handleRequestPartnership = async (data: { domainId: number; message: string }) => {
     try {
-      const response = await fetch('http://localhost:3001/api/partnerships/request', {
+      const response = await fetch('/api/partnerships', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -87,7 +89,7 @@ const PartnershipManagement: React.FC = () => {
 
   const handleUpdatePartnership = async (id: number, status: string) => {
     try {
-      const response = await fetch(`http://localhost:3001/api/partnerships/${id}`, {
+      const response = await fetch(`/api/partnerships/${id}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -121,22 +123,7 @@ const PartnershipManagement: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
       {/* Navigation */}
-      <nav className="backdrop-blur-sm border-b border-white/50 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto flex justify-between items-center p-4">
-          <div className="flex items-center space-x-2">
-            <img 
-              src="/images/logo_CarbonLeap.webp"
-              alt="CarbonLeap Logo" 
-              className="h-20 w-auto"
-            />
-          </div>
-          <div className="flex items-center space-x-4">
-            <div className="px-4 py-2 bg-white/10 rounded-lg backdrop-blur-md">
-              <span className="text-[#103D5E] font-medium">Welcome, {user?.name}</span>
-            </div>
-          </div>
-        </div>
-      </nav>
+      <Navigation />
 
       {/* Main Content */}
       <div className="flex min-h-[calc(100vh-4rem)]">

@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import Sidebar from './Sidebar';
+import Navigation from './Navigation';
+
 
 interface ClaimStatement {
   id: string;
@@ -208,6 +210,7 @@ const CarbonClaims = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
+      <Navigation />
       <div className="flex min-h-[calc(100vh-4rem)]">
         <Sidebar />
         <div className="flex-1 p-8">

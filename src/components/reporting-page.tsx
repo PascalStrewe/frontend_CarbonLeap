@@ -18,6 +18,8 @@ import {
 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import { useInterventions } from '../context/InterventionContext';
+import Navigation from './Navigation';
+
 
 interface FilterState {
   dateRange: {
@@ -262,6 +264,7 @@ const ReportingPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
+      <Navigation />
       <div className="flex min-h-[calc(100vh-4rem)]">
         <Sidebar />
         <div className="flex-1 p-8">

@@ -19,6 +19,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { useAuth } from '../context/AuthContext';
 import { useInterventions } from '../context/InterventionContext';
 import Sidebar from './Sidebar';
+import Navigation from './Navigation';
 
 
 interface Intervention {
@@ -104,35 +105,7 @@ const Dashboard: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
       {/* Navigation */}
-      <nav className="backdrop-blur-sm border-b border-white/50 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto flex justify-between items-center p-4">
-          <div className="flex items-center space-x-2">
-            <img 
-              src="/images/logo_CarbonLeap.webp"
-              alt="CarbonLeap Logo" 
-              className="h-20 w-auto"
-            />
-          </div>
-          <div className="flex items-center space-x-4">
-            <div className="px-4 py-2 bg-white/10 rounded-lg backdrop-blur-md">
-              <span className="text-[#103D5E] font-medium">Welcome, {user?.name}</span>
-            </div>
-            <button 
-              className="text-[#103D5E] hover:bg-white/20 p-2 rounded-lg transition-all duration-300"
-              onClick={() => navigate('/settings')}
-            >
-              <Settings className="h-5 w-5" />
-            </button>
-            <button 
-              className="text-[#103D5E] hover:bg-white/20 p-2 rounded-lg transition-all duration-300"
-              onClick={handleLogout}
-            >
-              <LogOut className="h-5 w-5" />
-            </button>
-          </div>
-        </div>
-      </nav>
-
+      <Navigation />
       {/* Main Content */}
       <div className="flex min-h-[calc(100vh-4rem)]">
         <Sidebar />

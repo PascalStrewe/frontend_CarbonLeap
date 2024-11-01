@@ -16,7 +16,8 @@ async function createTestEnvironment() {
             partnerDomain = await prisma.domain.create({
                 data: {
                     name: '@testcompany.com',
-                    companyName: 'Test Company BV'
+                    companyName: 'Test Company BV',
+                    supplyChainLevel: 1  // Adding the required supplyChainLevel field
                 }
             });
             console.log('Created new partner domain:', partnerDomain.companyName);

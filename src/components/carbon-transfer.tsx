@@ -14,6 +14,8 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useInterventions } from '../context/InterventionContext';
 import Sidebar from './Sidebar';
+import Navigation from './Navigation';
+
 
 interface Domain {
   id: number;
@@ -78,7 +80,15 @@ const TransferActions: React.FC<{
 }> = ({ transfer, onApprove, onReject }) => {
   const { user } = useAuth();
   
-  if (transfer.status !== 'pending' || transfer.targetDomain.name !== user?.domain?.name) {
+  // Debug logging
+  console.log('Transfer:', transfer);
+  console.log('User domain:', user?.domain);
+  
+  // Check if user is the target domain and transfer is pending
+  const isTargetDomain = transfer.targetDomain.name.replace('@', '') === user?.domain?.replace('@', '');
+  const isPending = transfer.status === 'pending';
+
+  if (!isPending || !isTargetDomain) {
     return null;
   }
 
@@ -105,7 +115,7 @@ const TransferActions: React.FC<{
 const CarbonTransfer: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { interventionData } = useInterventions();
+  const { interventionData, refreshInterventions } = useInterventions();
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [tradingPartners, setTradingPartners] = useState<Domain[]>([]);
   const [isTransferFormOpen, setIsTransferFormOpen] = useState(false);
@@ -124,7 +134,7 @@ const CarbonTransfer: React.FC = () => {
   useEffect(() => {
     const fetchPartners = async () => {
       try {
-        const response = await fetch('http://localhost:3001/api/trading-partners', {
+        const response = await fetch('/api/trading-partners', {
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('token')}`
           }
@@ -204,9 +214,63 @@ const CarbonTransfer: React.FC = () => {
       
       if (response.ok) {
         const updatedTransfer = await response.json();
+        
+        // Update the transfers list with the new status
         setTransfers(prev => 
           prev.map(t => t.id === updatedTransfer.id ? updatedTransfer : t)
         );
+  
+        // Update intervention data to reflect the transfer
+        const response = await fetch(`http://localhost:3001/api/intervention-requests/${updatedTransfer.sourceIntervention.id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          },
+          body: JSON.stringify({
+            emissionsAbated: (
+              parseFloat(updatedTransfer.sourceIntervention.scope3EmissionsAbated) - 
+              parseFloat(updatedTransfer.amount)
+            ).toString()
+          })
+        });
+  
+        if (!response.ok) {
+          throw new Error('Failed to update intervention credits');
+        }
+  
+        // Create a new intervention for the target company
+        const createResponse = await fetch('http://localhost:3001/api/intervention-requests', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          },
+          body: JSON.stringify({
+            modality: `Transfer from ${updatedTransfer.sourceDomain.name}`,
+            emissionsAbated: updatedTransfer.amount,
+            date: new Date().toLocaleDateString(),
+            status: 'verified',
+            clientName: updatedTransfer.targetDomain.companyName,
+            additionality: true,
+            causality: true,
+            geography: updatedTransfer.sourceIntervention.geography || 'Transfer',
+            lowCarbonFuel: updatedTransfer.sourceIntervention.lowCarbonFuel || 'N/A',
+            feedstock: updatedTransfer.sourceIntervention.feedstock || 'N/A',
+            certificationScheme: updatedTransfer.sourceIntervention.certificationScheme || 'N/A',
+            ghgEmissionSaving: updatedTransfer.sourceIntervention.ghgEmissionSaving || 'N/A',
+            vintage: new Date().getFullYear(),
+            thirdPartyVerification: 'Transfer Verified',
+            transferId: transferId
+          })
+        });
+  
+        if (!createResponse.ok) {
+          throw new Error('Failed to create intervention for target company');
+        }
+  
+        // Refresh intervention data in context
+        await refreshInterventions();
       }
     } catch (error) {
       console.error('Error approving transfer:', error);
@@ -251,22 +315,7 @@ const CarbonTransfer: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
       {/* Navigation */}
-      <nav className="backdrop-blur-sm border-b border-white/50 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto flex justify-between items-center p-4">
-          <div className="flex items-center space-x-2">
-            <img 
-              src="/images/logo_CarbonLeap.webp"
-              alt="CarbonLeap Logo" 
-              className="h-20 w-auto"
-            />
-          </div>
-          <div className="flex items-center space-x-4">
-            <div className="px-4 py-2 bg-white/10 rounded-lg backdrop-blur-md">
-              <span className="text-[#103D5E] font-medium">Welcome, {user?.name}</span>
-            </div>
-          </div>
-        </div>
-      </nav>
+      <Navigation />
 
       {/* Main Content */}
       <div className="flex min-h-[calc(100vh-4rem)]">

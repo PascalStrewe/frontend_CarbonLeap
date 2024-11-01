@@ -28,6 +28,7 @@ model Domain {
   id                      Int                      @id @default(autoincrement())
   name                    String                   @unique
   companyName             String
+  supplyChainLevel       Int                     // Level in supply chain, e.g., 1 for suppliers, 2 for manufacturers, etc.
   users                   User[]
   interventions           Intervention[]
   createdAt               DateTime                 @default(now())
@@ -182,4 +183,12 @@ model DomainPartnership {
   @@unique([domain1Id, domain2Id])
   @@index([domain1Id])
   @@index([domain2Id])
+}
+
+model SupplyChainLevelDescription {
+  level       Int      @id
+  description String
+  examples    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }

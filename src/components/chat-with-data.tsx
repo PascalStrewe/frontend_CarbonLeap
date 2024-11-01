@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Loader2, MessageSquare, AlertCircle } from 'lucide-react';
 import Sidebar from './Sidebar';
 import { useInterventions } from '../context/InterventionContext';
+import Navigation from './Navigation';
+
 
 interface Message {
   type: 'user' | 'assistant';
@@ -30,12 +32,11 @@ export default function ChatWithData() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    scrollToBottom();
+    // Only scroll to bottom if there are messages
+    if (messages.length > 0) {
+      scrollToBottom();
+    }
   }, [messages]);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -120,6 +121,7 @@ export default function ChatWithData() {
 
   return (
     <div className="min-h-screen bg-[#DAE9E6]">
+      <Navigation />
       <div className="flex min-h-[calc(100vh-4rem)]">
         <Sidebar />
         <div className="flex-1 p-8">
@@ -135,7 +137,7 @@ export default function ChatWithData() {
             </div>
 
             <div className="bg-white/25 backdrop-blur-md rounded-lg border border-white/20 p-6">
-              <div className="flex flex-col space-y-4 h-[500px] overflow-y-auto p-4 bg-white/10 rounded-lg border border-white/20">
+              <div className="flex flex-col space-y-4 h-[400px] overflow-y-auto p-4 bg-white/10 rounded-lg border border-white/20">
                 {messages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
                     <MessageSquare className="w-12 h-12 text-[#103D5E]/40" />

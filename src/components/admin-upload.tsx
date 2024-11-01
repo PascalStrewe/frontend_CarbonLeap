@@ -17,8 +17,11 @@ import Sidebar from './Sidebar';
 import axios from 'axios'; // Import axios for HTTP requests
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import Navigation from './Navigation';
+
 
 // Define an interface for Intervention Data for better type safety
+
 interface InterventionData {
   clientName: string;
   emissionsAbated: number;
@@ -48,6 +51,35 @@ interface User {
     companyName: string;
   };
 }
+
+// Helper function to parse Prisma errors into user-friendly messages
+const getPrismaErrorMessage = (error: string): string => {
+  // Check if it's a field validation error
+  const fieldValidationMatch = error.match(/Argument `(\w+)`: Invalid value provided. Expected (\w+), provided (\w+)/);
+  
+  if (fieldValidationMatch) {
+    const [_, field, expectedType, providedType] = fieldValidationMatch;
+    return `Invalid data format detected: The field "${field}" contains a ${providedType.toLowerCase()} value where a ${expectedType.toLowerCase()} was expected. Please check your CSV file to ensure all fields have the correct format.\n\nExample: If a number is expected, make sure the cell doesn't contain text or symbols.`;
+  }
+
+  // Check for required field errors
+  if (error.includes("Required field")) {
+    return "Some required fields are missing or empty in your CSV file. Please ensure all mandatory fields are filled out with valid values.";
+  }
+
+  // Check for NaN or invalid number errors
+  if (error.includes("NaN") || error.includes("Invalid number")) {
+    return "Some number fields in your CSV contain invalid values. Please ensure all number fields contain only digits (and decimal points where appropriate).";
+  }
+
+  // Default message for unhandled errors
+  return "There was an issue with the data format in your CSV file. Please ensure:\n" +
+         "• All number fields contain only digits\n" +
+         "• Dates are in a valid format (YYYY-MM-DD)\n" +
+         "• Required fields are not empty\n" +
+         "• Text fields don't contain special characters\n\n" +
+         "Review the upload guidelines below for the correct format of each field.";
+};
 
 const AdminUpload = () => {
   const { addInterventions, refreshInterventions } = useInterventions();
@@ -280,6 +312,19 @@ const AdminUpload = () => {
       setError('Please select a domain first.');
       return;
     }
+
+    // Validate file size (e.g., max 10MB)
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
+    if (file.size > MAX_FILE_SIZE) {
+      setError(`File size exceeds maximum limit of ${MAX_FILE_SIZE / 1024 / 1024}MB`);
+      return;
+    }
+
+    // Validate file type
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      setError('Please upload a CSV file only');
+      return;
+    }
   
     setProcessing(true);
     setError('');
@@ -308,7 +353,12 @@ const AdminUpload = () => {
           });
   
           if (response.data.success) {
-            setSuccess(`Successfully uploaded interventions for ${selectedDomain.companyName}`);
+            const uploadedCount = response.data.uploadedCount || 'multiple';
+            const skippedCount = response.data.skippedCount || 0;
+            setSuccess(
+              `Successfully uploaded ${uploadedCount} interventions for ${selectedDomain.companyName}. ` +
+              (skippedCount > 0 ? `${skippedCount} rows were skipped - check the skipped rows report for details.` : '')
+            );
             // Ensure refresh is complete before showing success
             await refreshInterventions();
             
@@ -326,9 +376,47 @@ const AdminUpload = () => {
           }
         } catch (err) {
           if (axios.isAxiosError(err) && err.response) {
-            console.error('Server response error:', err.response.data);
-            setError(err.response.data.message || err.response.data.error || 'Failed to upload file');
-          } else {
+            // Log detailed error information for debugging
+            console.error('Upload Error Details:', {
+              status: err.response?.status,
+              statusText: err.response?.statusText,
+              data: err.response?.data,
+            });
+
+            let errorMessage = 'Failed to upload file';
+
+            // Handle different error scenarios
+            switch (err.response.status) {
+              case 400:
+                errorMessage = err.response.data.error || 'Invalid request. Please check your file format.';
+                break;
+              case 401:
+                errorMessage = 'You are not authorized to upload interventions. Please log in again.';
+                break;
+              case 413:
+                errorMessage = 'File size is too large. Please try a smaller file.';
+                break;
+              case 415:
+                errorMessage = 'Invalid file format. Please upload a CSV file.';
+                break;
+              case 500:
+                if (err.response.data?.error) {
+                  errorMessage = getPrismaErrorMessage(err.response.data.error);
+                } else {
+                  errorMessage = 'An unexpected error occurred. Please try again or contact support if the issue persists.';
+                }
+                break;
+              default:
+                errorMessage = 'An error occurred while uploading. Please try again.';
+            }
+
+            setError(errorMessage);
+
+            // If in development, log the full error
+            if (import.meta.env.DEV) {
+              console.error('Full error details:', err.response.data);
+            }  
+                    } else {
             console.error('Upload error:', err);
             setError('Failed to upload file');
           }
@@ -406,6 +494,7 @@ const AdminUpload = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
+      <Navigation />
       <div className="flex min-h-[calc(100vh-4rem)]">
         <Sidebar />
         <div className="flex-1 p-8">
@@ -515,9 +604,12 @@ const AdminUpload = () => {
 
             {/* Status Messages */}
             {error && (
-              <div className="mt-4 backdrop-blur-md p-4 rounded-lg flex items-center space-x-2 bg-red-50/50 text-red-500">
-                <AlertCircle className="h-5 w-5" />
-                <span>{error}</span>
+              <div className="mt-4 backdrop-blur-md p-4 rounded-lg flex items-start space-x-2 bg-red-50/50 text-red-500">
+                <AlertCircle className="h-5 w-5 flex-shrink-0 mt-1" />
+                <div className="flex-1">
+                  <div className="font-medium">Error uploading file</div>
+                  <div className="mt-1 text-sm whitespace-pre-line">{error}</div>
+                </div>
               </div>
             )}
 

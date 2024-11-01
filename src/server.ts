@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs';
 import { emailService } from './emailService';
 import 'dotenv/config';
 import { SecureSQLQueryService } from './services/SecureSQLQueryService';
+import { SupplyChainTransferService } from './services/SupplyChainTransferService'; // Add this line
 import multer from 'multer';
 import { parse as csvParse } from 'csv-parse';
 import { Readable } from 'stream';
@@ -16,6 +17,7 @@ import path from 'path';
 import { ClaimsExpirationService } from './services/ClaimsExpirationService';
 import { PDFTemplateService } from './services/PDFTemplateService';
 import fs from 'fs/promises';
+
 
 // Type definitions
 interface AuthRequest extends Request {
@@ -458,7 +460,8 @@ app.post(
         data: {
           name: domainName,
           companyName,
-        },
+          supplyChainLevel: req.body.supplyChainLevel || 1
+        }
       });
 
       res.json({
@@ -485,7 +488,11 @@ app.get(
       }
 
       const domains = await prisma.domain.findMany({
-        include: {
+        select: {
+          id: true,
+          name: true,
+          companyName: true,
+          supplyChainLevel: true,
           users: {
             select: {
               id: true,
@@ -1535,6 +1542,778 @@ app.get('/api/claims/:id/preview-statement', authenticateToken, async (req: Auth
 
   } catch (error) {
     console.error('Error in preview-statement endpoint:', error);
+    next(error);
+  }
+});
+
+app.get('/api/domains/available', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const domainPartnerships = await prisma.domainPartnership.findMany({
+      where: {
+        OR: [
+          { domain1Id: req.user!.domainId },
+          { domain2Id: req.user!.domainId }
+        ],
+        status: { in: ['active', 'pending'] }
+      }
+    });
+
+    // Get IDs of domains that already have partnerships
+    const partneredDomainIds = domainPartnerships.flatMap(p => [p.domain1Id, p.domain2Id]);
+
+    // Get all domains except the current user's domain and those with existing partnerships
+    const availableDomains = await prisma.domain.findMany({
+      where: {
+        AND: [
+          // Exclude current user's domain
+          { id: { not: req.user!.domainId } },
+          // Exclude domains that already have partnerships
+          { id: { notIn: partneredDomainIds } }
+        ]
+      },
+      select: {
+        id: true,
+        name: true,
+        companyName: true
+      },
+      orderBy: {
+        companyName: 'asc'
+      }
+    });
+
+    return res.status(200).json(availableDomains);
+  } catch (error) {
+    console.error('Available domains API error:', error);
+    next(error);
+  }
+});
+
+// Get domain's supply chain level
+app.get('/api/domains/:id/supply-chain-level', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { id } = req.params;
+    
+    const domain = await prisma.domain.findUnique({
+      where: { id: parseInt(id) },
+      select: {
+        id: true,
+        name: true,
+        companyName: true,
+        supplyChainLevel: true
+      }
+    });
+
+    if (!domain) {
+      return res.status(404).json({ error: 'Domain not found' });
+    }
+
+    // Only allow admins or users from the same domain to see the level
+    if (!req.user?.isAdmin && req.user?.domainId !== domain.id) {
+      return res.status(403).json({ error: 'Not authorized to view supply chain level' });
+    }
+
+    return res.json(domain);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Add or update supply chain level descriptions
+app.post('/api/supply-chain-levels', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    if (!req.user?.isAdmin) {
+      return res.status(403).json({ error: 'Only admins can manage supply chain level descriptions' });
+    }
+
+    const { levels } = req.body;
+    
+    // Levels should be an array of { level: number, description: string }
+    if (!Array.isArray(levels)) {
+      return res.status(400).json({ error: 'Levels must be an array' });
+    }
+
+    // Store the level descriptions in a dedicated table
+    const results = await prisma.$transaction(
+      levels.map(level => 
+        prisma.supplyChainLevelDescription.upsert({
+          where: { level: level.level },
+          update: { description: level.description },
+          create: { level: level.level, description: level.description }
+        })
+      )
+    );
+
+    return res.json(results);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/supply-chain-levels', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const levels = await prisma.supplyChainLevelDescription.findMany({
+      select: {
+        level: true,
+        description: true,
+        examples: true
+      },
+      orderBy: { level: 'asc' }
+    });
+
+    // Add helper information about transportation companies
+    const response = {
+      levels,
+      transportationNote: `
+        Transportation companies can operate at multiple levels in the supply chain.
+        Their level should be set based on their primary business activity:
+        - Level 1: Raw material and primary goods transportation
+        - Level 2: Inter-factory and manufacturing logistics
+        - Level 3: Distribution and wholesale transportation
+        - Level 4: Last-mile delivery and local transport
+      `
+    };
+
+    return res.json(response);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Partnerships endpoints
+app.post('/api/partnerships', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { domainId, message } = req.body;
+
+    if (!domainId) {
+      return res.status(400).json({ error: 'Partner domain ID is required' });
+    }
+
+    // Check if partnership already exists
+    const existingPartnership = await prisma.domainPartnership.findFirst({
+      where: {
+        OR: [
+          {
+            AND: [
+              { domain1Id: req.user!.domainId },
+              { domain2Id: domainId }
+            ]
+          },
+          {
+            AND: [
+              { domain1Id: domainId },
+              { domain2Id: req.user!.domainId }
+            ]
+          }
+        ]
+      },
+      include: {
+        domain1: {
+          select: {
+            id: true,
+            name: true,
+            companyName: true
+          }
+        },
+        domain2: {
+          select: {
+            id: true,
+            name: true,
+            companyName: true
+          }
+        }
+      }
+    });
+
+    if (existingPartnership) {
+      if (existingPartnership.status === 'inactive') {
+        // Reactivate partnership
+        const updated = await prisma.domainPartnership.update({
+          where: { id: existingPartnership.id },
+          data: {
+            status: 'pending',
+            updatedAt: new Date()
+          },
+          include: {
+            domain1: {
+              select: {
+                id: true,
+                name: true,
+                companyName: true
+              }
+            },
+            domain2: {
+              select: {
+                id: true,
+                name: true,
+                companyName: true
+              }
+            }
+          }
+        });
+        return res.status(200).json(updated);
+      }
+      return res.status(400).json({ error: 'Partnership already exists' });
+    }
+
+    // Create new partnership
+    const partnership = await prisma.$transaction(async (tx) => {
+      // Create partnership
+      const newPartnership = await tx.domainPartnership.create({
+        data: {
+          domain1Id: req.user!.domainId,
+          domain2Id: domainId,
+          status: 'pending'
+        },
+        include: {
+          domain1: {
+            select: {
+              id: true,
+              name: true,
+              companyName: true
+            }
+          },
+          domain2: {
+            select: {
+              id: true,
+              name: true,
+              companyName: true
+            }
+          }
+        }
+      });
+
+      // Create notification for target domain
+      await tx.notification.create({
+        data: {
+          type: 'PARTNERSHIP_REQUEST',
+          message: `New partnership request from ${newPartnership.domain1.companyName}${
+            message ? `: ${message}` : ''
+          }`,
+          domainId,
+          metadata: {
+            partnershipId: newPartnership.id,
+            sourceCompany: newPartnership.domain1.companyName
+          }
+        }
+      });
+
+      return newPartnership;
+    });
+
+    return res.status(201).json(partnership);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/partnerships', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const partnerships = await prisma.domainPartnership.findMany({
+      where: {
+        OR: [
+          { domain1Id: req.user!.domainId },
+          { domain2Id: req.user!.domainId }
+        ]
+      },
+      include: {
+        domain1: {
+          select: {
+            id: true,
+            name: true,
+            companyName: true
+          }
+        },
+        domain2: {
+          select: {
+            id: true,
+            name: true,
+            companyName: true
+          }
+        }
+      },
+      orderBy: {
+        updatedAt: 'desc'
+      }
+    });
+
+    return res.json(partnerships);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/trading-partners', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    // Find all active partnerships where the current domain is involved
+    const partnerships = await prisma.domainPartnership.findMany({
+      where: {
+        OR: [
+          { domain1Id: req.user!.domainId },
+          { domain2Id: req.user!.domainId }
+        ],
+        status: 'active' // Only get active partnerships
+      },
+      include: {
+        domain1: {
+          select: {
+            id: true,
+            name: true,
+            companyName: true
+          }
+        },
+        domain2: {
+          select: {
+            id: true,
+            name: true,
+            companyName: true
+          }
+        }
+      }
+    });
+
+    // Transform the partnerships into a list of trading partners
+    const tradingPartners = partnerships.map(partnership => {
+      // If current user is domain1, return domain2 as partner, and vice versa
+      const partner = partnership.domain1Id === req.user!.domainId 
+        ? partnership.domain2 
+        : partnership.domain1;
+        
+      return {
+        id: partner.id,
+        name: partner.name,
+        companyName: partner.companyName
+      };
+    });
+
+    return res.json(tradingPartners);
+  } catch (error) {
+    console.error('Trading partners API error:', error);
+    next(error);
+  }
+});
+
+app.patch('/api/partnerships/:id', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const partnership = await prisma.$transaction(async (tx) => {
+      // Get partnership
+      const existing = await tx.domainPartnership.findUnique({
+        where: { id: parseInt(id) },
+        include: {
+          domain1: true,
+          domain2: true
+        }
+      });
+
+      if (!existing) {
+        throw new Error('Partnership not found');
+      }
+
+      // Verify authorization
+      if (existing.domain1Id !== req.user!.domainId && existing.domain2Id !== req.user!.domainId) {
+        throw new Error('Not authorized to update this partnership');
+      }
+
+      // Check if the user is trying to accept their own request
+      if (existing.domain1Id === req.user!.domainId && status === 'active') {
+        throw new Error('Cannot accept your own partnership request');
+      }
+
+      // Only domain2 (receiver) can accept/reject the partnership
+      if (status === 'active' || status === 'inactive') {
+        if (existing.domain2Id !== req.user!.domainId) {
+          throw new Error('Only the receiving domain can accept or reject partnership requests');
+        }
+      }
+
+      // Update partnership
+      const updated = await tx.domainPartnership.update({
+        where: { id: parseInt(id) },
+        data: {
+          status,
+          updatedAt: new Date()
+        },
+        include: {
+          domain1: {
+            select: {
+              id: true,
+              name: true,
+              companyName: true
+            }
+          },
+          domain2: {
+            select: {
+              id: true,
+              name: true,
+              companyName: true
+            }
+          }
+        }
+      });
+
+      // Create notification for the other party
+      const notificationDomainId = 
+        req.user!.domainId === existing.domain1Id 
+          ? existing.domain2Id 
+          : existing.domain1Id;
+
+      await tx.notification.create({
+        data: {
+          type: `PARTNERSHIP_${status.toUpperCase()}`,
+          message: `Partnership ${
+            status === 'active' ? 'accepted' : 
+            status === 'inactive' ? 'rejected' : 
+            'updated'
+          } by ${
+            req.user!.domainId === existing.domain1Id 
+              ? existing.domain1.companyName 
+              : existing.domain2.companyName
+          }`,
+          domainId: notificationDomainId,
+          metadata: {
+            partnershipId: existing.id,
+            status
+          }
+        }
+      });
+
+      return updated;
+    });
+
+    return res.json(partnership);
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === 'Partnership not found') {
+        return res.status(404).json({ error: error.message });
+      }
+      if (error.message === 'Not authorized to update this partnership') {
+        return res.status(403).json({ error: error.message });
+      }
+      if (error.message === 'Cannot accept your own partnership request' || 
+          error.message === 'Only the receiving domain can accept or reject partnership requests') {
+        return res.status(403).json({ error: error.message });
+      }
+    }
+    next(error);
+  }
+});
+
+// Transfers endpoints
+app.post('/api/transfers', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  const supplyChainService = new SupplyChainTransferService(prisma);
+  try {
+    const { interventionId, targetDomainId, amount, notes } = req.body;
+
+    // Validation
+    if (!interventionId || !targetDomainId || !amount) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Verify intervention exists and belongs to user's domain
+    const intervention = await prisma.interventionRequest.findFirst({
+      where: {
+        interventionId: interventionId,
+        user: {
+          domainId: req.user!.domainId
+        }
+      }
+    });
+
+    if (!intervention) {
+      return res.status(404).json({ error: 'Intervention not found or unauthorized' });
+    }
+
+    // Check if there's an active partnership
+    const partnership = await prisma.domainPartnership.findFirst({
+      where: {
+        OR: [
+          {
+            domain1Id: req.user!.domainId,
+            domain2Id: targetDomainId
+          },
+          {
+            domain1Id: targetDomainId,
+            domain2Id: req.user!.domainId
+          }
+        ],
+        status: 'active'
+      }
+    });
+
+    if (!partnership) {
+      return res.status(403).json({ error: 'No active partnership with target domain' });
+    }
+
+    // Check if there's enough remaining amount
+    if (intervention.remainingAmount < parseFloat(amount)) {
+      return res.status(400).json({ error: 'Insufficient remaining amount' });
+    }
+
+    // Validate supply chain transfer rules
+    const validationResult = await supplyChainService.validateTransfer({
+      sourceDomainId: req.user!.domainId,
+      targetDomainId,
+      interventionId,
+      amount: parseFloat(amount)
+    });
+
+    if (!validationResult.isValid) {
+      return res.status(400).json({ error: validationResult.error });
+    }
+
+    // Create transfer in transaction
+    const transfer = await prisma.$transaction(async (tx) => {
+      // Create the transfer
+      const newTransfer = await tx.transfer.create({
+        data: {
+          sourceInterventionId: intervention.id,
+          sourceDomainId: req.user!.domainId,
+          targetDomainId: targetDomainId,
+          amount: parseFloat(amount),
+          status: 'pending',
+          notes,
+          createdById: req.user!.id
+        },
+        include: {
+          sourceIntervention: true,
+          sourceDomain: true,
+          targetDomain: true,
+          createdBy: true
+        }
+      });
+
+      // Update intervention's remaining amount
+      await tx.interventionRequest.update({
+        where: { id: intervention.id },
+        data: {
+          remainingAmount: {
+            decrement: parseFloat(amount)
+          }
+        }
+      });
+
+      // Create notification for target domain
+      await tx.notification.create({
+        data: {
+          type: 'TRANSFER_REQUEST',
+          message: `New transfer request for ${amount} tCO2e`,
+          domainId: targetDomainId,
+          metadata: {
+            transferId: newTransfer.id,
+            amount: amount,
+            interventionId: interventionId
+          }
+        }
+      });
+
+      return newTransfer;
+    });
+
+    return res.status(201).json(transfer);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/transfers', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const transfers = await prisma.transfer.findMany({
+      where: {
+        OR: [
+          { sourceDomainId: req.user!.domainId },
+          { targetDomainId: req.user!.domainId }
+        ]
+      },
+      include: {
+        sourceIntervention: true,
+        sourceDomain: {
+          select: {
+            id: true,
+            name: true,
+            companyName: true,
+            supplyChainLevel: true
+          }
+        },
+        targetDomain: {
+          select: {
+            id: true,
+            name: true,
+            companyName: true,
+            supplyChainLevel: true
+          }
+        },
+        createdBy: true
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+
+    return res.json(transfers);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/transfers/:id/approve', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { id } = req.params;
+
+    const transfer = await prisma.transfer.findUnique({
+      where: { id },
+      include: {
+        sourceDomain: true,
+        targetDomain: true
+      }
+    });
+
+    if (!transfer) {
+      return res.status(404).json({ error: 'Transfer not found' });
+    }
+
+    // Only target domain can approve
+    if (transfer.targetDomainId !== req.user!.domainId) {
+      return res.status(403).json({ error: 'Not authorized to approve this transfer' });
+    }
+
+    if (transfer.status !== 'pending') {
+      return res.status(400).json({ error: 'Transfer is not pending' });
+    }
+
+    const updatedTransfer = await prisma.$transaction(async (tx) => {
+      // Update transfer status
+      const updated = await tx.transfer.update({
+        where: { id },
+        data: {
+          status: 'completed',
+          completedAt: new Date()
+        },
+        include: {
+          sourceIntervention: true,
+          sourceDomain: true,
+          targetDomain: true
+        }
+      });
+
+      // Create notification for source domain
+      await tx.notification.create({
+        data: {
+          type: 'TRANSFER_APPROVED',
+          message: `Transfer of ${transfer.amount} tCO2e has been approved`,
+          domainId: transfer.sourceDomainId,
+          metadata: {
+            transferId: transfer.id,
+            amount: transfer.amount
+          }
+        }
+      });
+
+      return updated;
+    });
+
+    return res.json(updatedTransfer);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/transfers/:id/reject', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { id } = req.params;
+
+    const transfer = await prisma.transfer.findUnique({
+      where: { id },
+      include: {
+        sourceIntervention: true,
+        sourceDomain: true,
+        targetDomain: true
+      }
+    });
+
+    if (!transfer) {
+      return res.status(404).json({ error: 'Transfer not found' });
+    }
+
+    // Only target domain can reject
+    if (transfer.targetDomainId !== req.user!.domainId) {
+      return res.status(403).json({ error: 'Not authorized to reject this transfer' });
+    }
+
+    if (transfer.status !== 'pending') {
+      return res.status(400).json({ error: 'Transfer is not pending' });
+    }
+
+    const updatedTransfer = await prisma.$transaction(async (tx) => {
+      // Update transfer status
+      const updated = await tx.transfer.update({
+        where: { id },
+        data: {
+          status: 'cancelled'
+        },
+        include: {
+          sourceIntervention: true,
+          sourceDomain: true,
+          targetDomain: true
+        }
+      });
+
+      // Restore the amount to the intervention's remaining amount
+      await tx.interventionRequest.update({
+        where: { id: transfer.sourceInterventionId },
+        data: {
+          remainingAmount: {
+            increment: transfer.amount
+          }
+        }
+      });
+
+      // Create notification for source domain
+      await tx.notification.create({
+        data: {
+          type: 'TRANSFER_REJECTED',
+          message: `Transfer of ${transfer.amount} tCO2e has been rejected`,
+          domainId: transfer.sourceDomainId,
+          metadata: {
+            transferId: transfer.id,
+            amount: transfer.amount
+          }
+        }
+      });
+
+      return updated;
+    });
+
+    return res.json(updatedTransfer);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Add this to server.ts after the domain routes
+app.patch('/api/domains/:id/supply-chain-level', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    if (!req.user?.isAdmin) {
+      return res.status(403).json({ error: 'Only admins can modify supply chain levels' });
+    }
+
+    const { id } = req.params;
+    const { level } = req.body;
+
+    if (typeof level !== 'number' || level < 1) {
+      return res.status(400).json({ error: 'Supply chain level must be a positive number' });
+    }
+
+    const updatedDomain = await prisma.domain.update({
+      where: { id: parseInt(id) },
+      data: {
+        supplyChainLevel: level
+      }
+    });
+
+    return res.json(updatedDomain);
+  } catch (error) {
     next(error);
   }
 });

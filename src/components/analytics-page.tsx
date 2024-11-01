@@ -1,6 +1,8 @@
 // C:/Users/PascalStrewe/Downloads/frontend_CarbonLeap/src/components/analytics-page.tsx
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import Navigation from './Navigation';
+
 
 import { 
   Download, 
@@ -282,6 +284,7 @@ const ReportingPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
+      <Navigation />
       <div className="flex min-h-[calc(100vh-4rem)]">
         <Sidebar />
         <div className="flex-1 p-8">

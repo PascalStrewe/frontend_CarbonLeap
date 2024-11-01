@@ -6,6 +6,8 @@ import { Check, AlertCircle, Calendar, Loader2 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import Sidebar from './Sidebar';
 import { useInterventions } from "../context/InterventionContext";
+import Navigation from './Navigation';
+
 
 
 // Type Definitions
@@ -201,6 +203,7 @@ const InterventionRequest = () => {
   if (submitted) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
+        <Navigation />
         <div className="flex min-h-[calc(100vh-4rem)]">
           <Sidebar />
           <div className="flex-1 p-8">
@@ -315,6 +318,7 @@ const InterventionRequest = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
+      <Navigation />
       <div className="flex min-h-[calc(100vh-4rem)]">
         <Sidebar />
         <div className="flex-1 p-8">
