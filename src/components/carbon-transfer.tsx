@@ -7,7 +7,9 @@ import {
   Search,
   FileText,
   Building,
-  Filter
+  Filter,
+  X,
+  RefreshCw,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useInterventions } from '../context/InterventionContext';
@@ -48,6 +50,58 @@ interface TransferFormData {
   notes?: string;
 }
 
+const TransferStatusBadge: React.FC<{ status: string }> = ({ status }) => {
+  const getStatusStyles = () => {
+    switch (status.toLowerCase()) {
+      case 'completed':
+        return 'bg-green-100 text-green-800';
+      case 'pending':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'cancelled':
+        return 'bg-red-100 text-red-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  return (
+    <span className={`px-2 py-1 rounded-full text-sm ${getStatusStyles()}`}>
+      {status.charAt(0).toUpperCase() + status.slice(1)}
+    </span>
+  );
+};
+
+const TransferActions: React.FC<{
+  transfer: Transfer;
+  onApprove: () => void;
+  onReject: () => void;
+}> = ({ transfer, onApprove, onReject }) => {
+  const { user } = useAuth();
+  
+  if (transfer.status !== 'pending' || transfer.targetDomain.name !== user?.domain?.name) {
+    return null;
+  }
+
+  return (
+    <div className="flex gap-2">
+      <button
+        onClick={onApprove}
+        className="p-1 text-green-600 hover:bg-green-50 rounded"
+        title="Approve Transfer"
+      >
+        <CheckCircle2 className="h-5 w-5" />
+      </button>
+      <button
+        onClick={onReject}
+        className="p-1 text-red-600 hover:bg-red-50 rounded"
+        title="Reject Transfer"
+      >
+        <X className="h-5 w-5" />
+      </button>
+    </div>
+  );
+};
+
 const CarbonTransfer: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -63,6 +117,8 @@ const CarbonTransfer: React.FC = () => {
   });
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Fetch available trading partners
   useEffect(() => {
@@ -109,6 +165,9 @@ const CarbonTransfer: React.FC = () => {
 
   const handleTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
+    setLoading(true);
+
     try {
       const response = await fetch('http://localhost:3001/api/transfers', {
         method: 'POST',
@@ -119,13 +178,58 @@ const CarbonTransfer: React.FC = () => {
         body: JSON.stringify(formData)
       });
       
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to create transfer');
+      }
+      
+      const newTransfer = await response.json();
+      setTransfers(prev => [...prev, newTransfer]);
+      setIsTransferFormOpen(false);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to create transfer');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApproveTransfer = async (transferId: string) => {
+    try {
+      const response = await fetch(`http://localhost:3001/api/transfers/${transferId}/approve`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      
       if (response.ok) {
-        setIsTransferFormOpen(false);
-        const newTransfer = await response.json();
-        setTransfers(prev => [...prev, newTransfer]);
+        const updatedTransfer = await response.json();
+        setTransfers(prev => 
+          prev.map(t => t.id === updatedTransfer.id ? updatedTransfer : t)
+        );
       }
     } catch (error) {
-      console.error('Error creating transfer:', error);
+      console.error('Error approving transfer:', error);
+    }
+  };
+
+  const handleRejectTransfer = async (transferId: string) => {
+    try {
+      const response = await fetch(`http://localhost:3001/api/transfers/${transferId}/reject`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      
+      if (response.ok) {
+        const updatedTransfer = await response.json();
+        setTransfers(prev => 
+          prev.map(t => t.id === updatedTransfer.id ? updatedTransfer : t)
+        );
+      }
+    } catch (error) {
+      console.error('Error rejecting transfer:', error);
     }
   };
 
@@ -221,6 +325,7 @@ const CarbonTransfer: React.FC = () => {
                       <th className="px-4 py-2 text-left">Intervention</th>
                       <th className="px-4 py-2 text-left">Amount</th>
                       <th className="px-4 py-2 text-left">Status</th>
+                      <th className="px-4 py-2 text-left">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -254,15 +359,14 @@ const CarbonTransfer: React.FC = () => {
                           {parseFloat(transfer.amount).toFixed(2)} tCO2e
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`px-2 py-1 rounded-full text-sm ${
-                            transfer.status === 'completed' 
-                              ? 'bg-green-100 text-green-800'
-                              : transfer.status === 'pending'
-                              ? 'bg-yellow-100 text-yellow-800'
-                              : 'bg-red-100 text-red-800'
-                          }`}>
-                            {transfer.status.charAt(0).toUpperCase() + transfer.status.slice(1)}
-                          </span>
+                          <TransferStatusBadge status={transfer.status} />
+                        </td>
+                        <td className="px-4 py-3">
+                          <TransferActions
+                            transfer={transfer}
+                            onApprove={() => handleApproveTransfer(transfer.id)}
+                            onReject={() => handleRejectTransfer(transfer.id)}
+                          />
                         </td>
                       </tr>
                     ))}
@@ -281,7 +385,12 @@ const CarbonTransfer: React.FC = () => {
             {isTransferFormOpen && (
               <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
                 <div className="bg-white/95 backdrop-blur-md rounded-xl p-6 w-full max-w-lg">
-                  <h2 className="text-xl font-semibold text-[#103D5E] mb-4">New Transfer</h2>
+                <h2 className="text-xl font-semibold text-[#103D5E] mb-4">New Transfer</h2>
+                  {error && (
+                    <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg">
+                      {error}
+                    </div>
+                  )}
                   <form onSubmit={handleTransfer}>
                     <div className="space-y-4">
                       <div>
@@ -389,15 +498,26 @@ const CarbonTransfer: React.FC = () => {
                         type="button"
                         onClick={() => setIsTransferFormOpen(false)}
                         className="px-4 py-2 text-[#103D5E] hover:bg-white/20 rounded-lg transition-all duration-300"
+                        disabled={loading}
                       >
                         Cancel
                       </button>
                       <button
                         type="submit"
-                        className="px-4 py-2 bg-[#103D5E] text-white rounded-lg hover:bg-[#103D5E]/90 transition-all duration-300"
-                        disabled={!tradingPartners.length}
+                        className="flex items-center gap-2 px-4 py-2 bg-[#103D5E] text-white rounded-lg hover:bg-[#103D5E]/90 transition-all duration-300 disabled:opacity-50"
+                        disabled={loading || !tradingPartners.length}
                       >
-                        Create Transfer
+                        {loading ? (
+                          <>
+                            <RefreshCw className="h-4 w-4 animate-spin" />
+                            Processing...
+                          </>
+                        ) : (
+                          <>
+                            <ArrowLeftRight className="h-4 w-4" />
+                            Create Transfer
+                          </>
+                        )}
                       </button>
                     </div>
                   </form>
@@ -449,7 +569,7 @@ const CarbonTransfer: React.FC = () => {
   );
 };
 
-// Reuse MetricCard component
+// Metric Card Component
 interface MetricCardProps {
   icon: React.ReactNode;
   title: string;

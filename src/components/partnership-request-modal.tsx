@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Send, X } from 'lucide-react';
+import { Send, X, RefreshCw } from 'lucide-react';
 
 interface PartnershipRequestForm {
   partnerEmail: string;

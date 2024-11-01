@@ -19,6 +19,34 @@ interface JWTPayload {
   isAdmin: boolean;
 }
 
+async function validatePartnership(
+  sourceDomainId: number,
+  targetDomainId: number,
+  tx: PrismaClient
+): Promise<boolean> {
+  const partnership = await tx.domainPartnership.findFirst({
+    where: {
+      OR: [
+        {
+          AND: [
+            { domain1Id: sourceDomainId },
+            { domain2Id: targetDomainId },
+            { status: 'active' }
+          ]
+        },
+        {
+          AND: [
+            { domain1Id: targetDomainId },
+            { domain2Id: sourceDomainId },
+            { status: 'active' }
+          ]
+        }
+      ]
+    }
+  });
+  return !!partnership;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     // Verify JWT token
@@ -102,264 +130,131 @@ async function handleCreateTransfer(
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
-  // Start transaction
-  const transfer = await prisma.$transaction(async (tx) => {
-    // 1. Get intervention and verify ownership
-    const intervention = await tx.interventionRequest.findUnique({
-      where: { id: interventionId },
-      include: {
-        user: {
-          select: {
-            domainId: true
-          }
-        },
-        claims: {
-          where: {
-            status: 'active',
-            claimingDomainId: decoded.domainId,
-            expiryDate: {
-              gt: new Date()
+  try {
+    const transfer = await prisma.$transaction(async (tx) => {
+      // 1. Verify active partnership exists
+      const hasPartnership = await validatePartnership(decoded.domainId, targetDomainId, tx);
+      if (!hasPartnership) {
+        throw new Error('No active partnership exists with the target domain');
+      }
+
+      // 2. Get intervention and verify ownership
+      const intervention = await tx.interventionRequest.findUnique({
+        where: { id: interventionId },
+        include: {
+          user: {
+            select: {
+              domainId: true
+            }
+          },
+          claims: {
+            where: {
+              status: 'active',
+              claimingDomainId: decoded.domainId,
+              expiryDate: {
+                gt: new Date()
+              }
             }
           }
         }
+      });
+
+      if (!intervention) {
+        throw new Error('Intervention not found');
       }
-    });
 
-    if (!intervention) {
-      throw new Error('Intervention not found');
-    }
-
-    if (intervention.user.domainId !== decoded.domainId) {
-      throw new Error('Not authorized to transfer this intervention');
-    }
-
-    // 2. Verify claimed amount
-    const totalClaimed = intervention.claims.reduce(
-      (sum, claim) => sum + claim.amount,
-      0
-    );
-
-    if (totalClaimed < parseFloat(amount)) {
-      throw new Error(`Insufficient claimed amount. Available: ${totalClaimed} tCO2e`);
-    }
-
-    // 3. Create transfer
-    const newTransfer = await tx.transfer.create({
-      data: {
-        sourceInterventionId: interventionId,
-        sourceDomainId: decoded.domainId,
-        targetDomainId,
-        amount: amount.toString(),
-        status: 'pending',
-        notes,
-        createdById: decoded.userId
-      },
-      include: {
-        sourceIntervention: {
-          select: {
-            id: true,
-            modality: true,
-            scope3EmissionsAbated: true
-          }
-        },
-        sourceDomain: {
-          select: {
-            name: true,
-            companyName: true
-          }
-        },
-        targetDomain: {
-          select: {
-            name: true,
-            companyName: true
-          }
-        },
-        createdBy: {
-          select: {
-            email: true
-          }
-        }
+      if (intervention.user.domainId !== decoded.domainId) {
+        throw new Error('Not authorized to transfer this intervention');
       }
-    });
 
-    // 4. Update claim status if full amount is transferred
-    if (parseFloat(amount) === totalClaimed) {
-      await tx.carbonClaim.updateMany({
+      // 3. Verify claimed amount and check if it's already being transferred
+      const activeTransfers = await tx.transfer.findMany({
         where: {
-          interventionId,
-          claimingDomainId: decoded.domainId,
-          status: 'active'
-        },
-        data: {
-          status: 'transferred'
+          sourceInterventionId: interventionId,
+          status: 'pending',
+          sourceDomainId: decoded.domainId
         }
       });
-    }
 
-    return newTransfer;
-  });
+      const pendingTransferAmount = activeTransfers.reduce(
+        (sum, transfer) => sum + parseFloat(transfer.amount.toString()),
+        0
+      );
 
-  return res.status(201).json(transfer);
-}
+      const totalClaimed = intervention.claims.reduce(
+        (sum, claim) => sum + claim.amount,
+        0
+      );
 
-// src/pages/api/transfers/[id]/approve.ts
-export async function handleApproveTransfer(
-  req: NextApiRequest,
-  res: NextApiResponse,
-  decoded: JWTPayload
-) {
-  const { id } = req.query;
-
-  const transfer = await prisma.$transaction(async (tx) => {
-    // 1. Get transfer
-    const transfer = await tx.transfer.findUnique({
-      where: { id: id as string },
-      include: {
-        targetDomain: true
+      const availableAmount = totalClaimed - pendingTransferAmount;
+      
+      if (availableAmount < parseFloat(amount)) {
+        throw new Error(
+          `Insufficient available amount. Available: ${availableAmount} tCO2e (${totalClaimed} claimed - ${pendingTransferAmount} pending)`
+        );
       }
-    });
 
-    if (!transfer) {
-      throw new Error('Transfer not found');
-    }
-
-    // 2. Verify authorization
-    if (transfer.targetDomainId !== decoded.domainId) {
-      throw new Error('Not authorized to approve this transfer');
-    }
-
-    if (transfer.status !== 'pending') {
-      throw new Error('Transfer is not pending');
-    }
-
-    // 3. Update transfer status
-    const updatedTransfer = await tx.transfer.update({
-      where: { id: id as string },
-      data: {
-        status: 'completed',
-        completedAt: new Date()
-      },
-      include: {
-        sourceIntervention: {
-          select: {
-            id: true,
-            modality: true,
-            scope3EmissionsAbated: true
-          }
+      // 4. Create transfer with tracking numbers
+      const newTransfer = await tx.transfer.create({
+        data: {
+          sourceInterventionId: interventionId,
+          sourceDomainId: decoded.domainId,
+          targetDomainId,
+          amount: amount.toString(),
+          status: 'pending',
+          notes,
+          createdById: decoded.userId
         },
-        sourceDomain: {
-          select: {
-            name: true,
-            companyName: true
-          }
-        },
-        targetDomain: {
-          select: {
-            name: true,
-            companyName: true
+        include: {
+          sourceIntervention: {
+            select: {
+              id: true,
+              modality: true,
+              scope3EmissionsAbated: true
+            }
+          },
+          sourceDomain: {
+            select: {
+              name: true,
+              companyName: true
+            }
+          },
+          targetDomain: {
+            select: {
+              name: true,
+              companyName: true
+            }
+          },
+          createdBy: {
+            select: {
+              email: true
+            }
           }
         }
-      }
-    });
+      });
 
-    // 4. Create notification for source domain
-    await tx.notification.create({
-      data: {
-        type: 'TRANSFER_APPROVED',
-        message: `Transfer of ${transfer.amount} tCO2e has been approved by ${transfer.targetDomain.companyName}`,
-        domainId: transfer.sourceDomainId,
-        metadata: {
-          transferId: transfer.id,
-          amount: transfer.amount
-        }
-      }
-    });
-
-    return updatedTransfer;
-  });
-
-  return res.status(200).json(transfer);
-}
-
-// src/pages/api/transfers/[id]/reject.ts
-export async function handleRejectTransfer(
-  req: NextApiRequest,
-  res: NextApiResponse,
-  decoded: JWTPayload
-) {
-  const { id } = req.query;
-  const { reason } = req.body;
-
-  const transfer = await prisma.$transaction(async (tx) => {
-    // 1. Get transfer
-    const transfer = await tx.transfer.findUnique({
-      where: { id: id as string },
-      include: {
-        targetDomain: true
-      }
-    });
-
-    if (!transfer) {
-      throw new Error('Transfer not found');
-    }
-
-    // 2. Verify authorization
-    if (transfer.targetDomainId !== decoded.domainId) {
-      throw new Error('Not authorized to reject this transfer');
-    }
-
-    if (transfer.status !== 'pending') {
-      throw new Error('Transfer is not pending');
-    }
-
-    // 3. Update transfer status
-    const updatedTransfer = await tx.transfer.update({
-      where: { id: id as string },
-      data: {
-        status: 'cancelled',
-        notes: reason || 'Transfer rejected'
-      },
-      include: {
-        sourceIntervention: {
-          select: {
-            id: true,
-            modality: true,
-            scope3EmissionsAbated: true
-          }
-        },
-        sourceDomain: {
-          select: {
-            name: true,
-            companyName: true
-          }
-        },
-        targetDomain: {
-          select: {
-            name: true,
-            companyName: true
+      // 5. Create notifications for both parties
+      await tx.notification.create({
+        data: {
+          type: 'TRANSFER_CREATED',
+          message: `New transfer of ${amount} tCO2e created`,
+          domainId: targetDomainId,
+          metadata: {
+            transferId: newTransfer.id,
+            amount: amount,
+            sourceCompany: newTransfer.sourceDomain.companyName
           }
         }
-      }
+      });
+
+      return newTransfer;
     });
 
-    // 4. Create notification for source domain
-    await tx.notification.create({
-      data: {
-        type: 'TRANSFER_REJECTED',
-        message: `Transfer of ${transfer.amount} tCO2e has been rejected by ${transfer.targetDomain.companyName}${
-          reason ? `: ${reason}` : ''
-        }`,
-        domainId: transfer.sourceDomainId,
-        metadata: {
-          transferId: transfer.id,
-          amount: transfer.amount,
-          reason
-        }
-      }
-    });
-
-    return updatedTransfer;
-  });
-
-  return res.status(200).json(transfer);
+    return res.status(201).json(transfer);
+  } catch (error) {
+    if (error instanceof Error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.status(500).json({ error: 'Failed to create transfer' });
+  }
 }

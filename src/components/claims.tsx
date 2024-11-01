@@ -256,10 +256,10 @@ const CarbonClaims = () => {
                     {filteredClaims.map((claim) => (
                       <tr 
                         key={claim.id}
-                        className="border-t border-white/10 hover:bg-white/10 transition-colors duration-200"
-                      >
-                        <td className="px-4 py-3 text-[#103D5E]">
-                          {claim.intervention.modality}
+                        className="border-t border-white/10 hover:bg-white/10 transition-colors duration-200">
+                          <div className="font-medium">ID: {claim.intervention.interventionId}</div>
+                          <td className="px-4 py-3 text-[#103D5E]">
+                            <div className="font-medium">ID: {claim.intervention.interventionId}</div>
                           <div className="text-sm text-[#103D5E]/60">
                             {claim.intervention.geography}
                           </div>
@@ -370,13 +370,15 @@ const CarbonClaims = () => {
                           {interventions
                             .filter(intervention => intervention.status === 'verified')
                             .map((intervention) => {
+                              // Calculate total amount already claimed for this intervention
                               const existingClaims = claims.filter(
-                                claim => claim.interventionId === intervention.id
+                                claim => claim.intervention.interventionId === intervention.interventionId && claim.status === 'active'
                               );
                               const totalClaimed = existingClaims.reduce(
                                 (sum, claim) => sum + claim.amount,
                                 0
                               );
+                              // Calculate remaining available amount
                               const available = intervention.emissionsAbated - totalClaimed;
 
                               return (
@@ -385,7 +387,7 @@ const CarbonClaims = () => {
                                   value={intervention.interventionId}
                                   disabled={available <= 0}
                                 >
-                                  {intervention.modality} - {available.toFixed(1)} tCO2e available
+                                  ID: {intervention.interventionId} - {intervention.modality} - {available.toFixed(1)} tCO2e available
                                 </option>
                               );
                             })}
@@ -408,11 +410,19 @@ const CarbonClaims = () => {
                         {selectedIntervention && (
                           <p className="text-sm text-[#103D5E]/60 mt-1">
                             Available: {
-                              interventions
-                                .find(i => i.id === selectedIntervention)?.emissionsAbated -
-                              claims
-                                .filter(c => c.interventionId === selectedIntervention)
-                                .reduce((sum, c) => sum + c.amount, 0)
+                              (() => {
+                                const intervention = interventions.find(i => i.interventionId === selectedIntervention);
+                                if (!intervention) return 0;
+                                
+                                const existingClaims = claims.filter(
+                                  claim => claim.intervention.interventionId === selectedIntervention && claim.status === 'active'
+                                );
+                                const totalClaimed = existingClaims.reduce(
+                                  (sum, claim) => sum + claim.amount,
+                                  0
+                                );
+                                return (intervention.emissionsAbated - totalClaimed).toFixed(1);
+                              })()
                             } tCO2e
                           </p>
                         )}
