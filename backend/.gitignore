@@ -1,0 +1,24 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+
+# Build output
+dist/
+build/
+
+# Storage
+/storage/*
+!/storage/.gitkeep
+/public/storage
+/temp
+
+# Build artifacts
+.next/
+out/
+
+# TypeScript incremental build files
+.tsbuildinfo

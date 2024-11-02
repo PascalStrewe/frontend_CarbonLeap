@@ -1,0 +1,18 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+
+# Build output
+dist/
+build/
+
+# Build artifacts
+.next/
+out/
+
+# Vite cache
+.vite/

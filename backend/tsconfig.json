@@ -28,7 +28,7 @@
     "allowSyntheticDefaultImports": true,
     "incremental": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "prisma/**/*", "Scripts/**/*"],
   "exclude": ["node_modules", "dist"],
   "ts-node": {
     "transpileOnly": true,

@@ -131,11 +131,12 @@ async function verifyEmailConfig() {
 }
 
 // CORS middleware
+// Find and replace the CORS configuration in server.ts
 app.use(
   cors({
-    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    origin: 'http://localhost:5173',
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
@@ -977,176 +978,165 @@ app.post(
 );
 
 // Claims routes
-app.post(
-  '/api/claims',
-  authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
-    console.log('Received claim request:', {
-      body: req.body,
-      path: req.path,
-      method: req.method,
-      user: req.user
-    });
+app.post('/api/claims', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  console.log('Starting claim creation process');
+  const pdfTemplateService = new PDFTemplateService();
+  
+  try {
+    const { interventionId, amount } = req.body;
+    
+    if (!interventionId || !amount) {
+      throw new Error('InterventionId and amount are required');
+    }
 
-    try {
-      const { interventionId, amount } = req.body;
-      
-      if (!interventionId || !amount) {
-        console.log('Missing required fields:', { interventionId, amount });
-        res.status(400).json({
-          success: false,
-          message: 'InterventionId and amount are required',
-        });
-        return;
+    // Start transaction
+    const result = await prisma.$transaction(async (tx) => {
+      // Find intervention
+      const interventionRequest = await tx.interventionRequest.findFirst({
+        where: {
+          OR: [
+            { id: interventionId },
+            { interventionId: interventionId }
+          ]
+        },
+        include: {
+          claims: true
+        }
+      });
+
+      if (!interventionRequest) {
+        throw new Error(`Intervention not found with ID: ${interventionId}`);
       }
 
-      // Start transaction
-      const result = await prisma.$transaction(async (tx) => {
-        // Find intervention
-        const interventionRequest = await tx.interventionRequest.findFirst({
-          where: {
-            OR: [
-              { id: interventionId },
-              { interventionId: interventionId }
-            ]
-          },
-          include: {
-            claims: true
-          }
-        });
+      // Calculate available amount
+      const totalClaimed = interventionRequest.claims
+        .filter(claim => claim.status === 'active')
+        .reduce((sum, claim) => sum + claim.amount, 0);
+      
+      const available = interventionRequest.emissionsAbated - totalClaimed;
 
-        if (!interventionRequest) {
-          throw new Error(`Intervention not found with ID: ${interventionId}`);
+      if (amount > available) {
+        throw new Error(`Insufficient available amount. Available: ${available.toFixed(2)} tCO2e`);
+      }
+
+      // Get domain
+      const domain = await tx.domain.findUnique({
+        where: { id: req.user!.domainId }
+      });
+
+      if (!domain) {
+        throw new Error('Domain not found');
+      }
+
+      // Create claim
+      const claim = await tx.carbonClaim.create({
+        data: {
+          interventionId: interventionRequest.interventionId,
+          claimingDomainId: req.user!.domainId,
+          amount: parseFloat(amount.toString()),
+          vintage: parseInt(interventionRequest.vintage.toString()),
+          expiryDate: new Date(Date.now() + (2 * 365 * 24 * 60 * 60 * 1000)),
+          status: 'active'
         }
+      });
 
-        // Calculate available amount
-        const totalClaimed = interventionRequest.claims
-          .filter(claim => claim.status === 'active')
-          .reduce((sum, claim) => sum + claim.amount, 0);
-        
-        const available = interventionRequest.emissionsAbated - totalClaimed;
-
-        if (amount > available) {
-          throw new Error(`Insufficient available amount. Available: ${available} tCO2e`);
-        }
-
-        // Get domain for PDF generation
-        const domain = await tx.domain.findUnique({
-          where: { id: req.user!.domainId }
-        });
-
-        if (!domain) {
-          throw new Error('Domain not found');
-        }
-
-        // Create claim
-        const claim = await tx.carbonClaim.create({
-          data: {
-            interventionId: interventionRequest.interventionId,
-            claimingDomainId: req.user!.domainId,
-            amount: parseFloat(amount.toString()),
-            vintage: parseInt(interventionRequest.vintage.toString()),
-            expiryDate: new Date(Date.now() + (2 * 365 * 24 * 60 * 60 * 1000)),
-            status: 'active'
-          }
-        });
-
+      let pdfBuffer;
+      try {
         // Generate PDF statement
-        const pdfBuffer = await pdfTemplateService.generateClaimStatement(
+        pdfBuffer = await pdfTemplateService.generateClaimStatement(
           claim,
           interventionRequest,
           domain
         );
-
-        // Create directory if it doesn't exist
-        const storageDir = path.join(process.cwd(), 'storage', 'claims', domain.id.toString());
-        await fs.mkdir(storageDir, { recursive: true });
-
-        // Save PDF file
-        const pdfPath = path.join('claims', domain.id.toString(), `${claim.id}.pdf`);
-        const fullPath = path.join(process.cwd(), 'storage', pdfPath);
-        await fs.writeFile(fullPath, pdfBuffer);
-
-        // Save metadata
-        await fs.writeFile(
-          `${fullPath}.meta.json`,
-          JSON.stringify({
-            domainId: domain.id,
-            createdAt: new Date().toISOString(),
-            createdBy: req.user!.id,
-            mimeType: 'application/pdf',
-            visibility: 'private'
-          })
-        );
-
-        // Create statement record
-        await tx.claimStatement.create({
-          data: {
-            claimId: claim.id,
-            pdfUrl: `/storage/${pdfPath}`,
-            templateVersion: '1.0',
-            metadata: {
-              generatedAt: new Date(),
-              generatedBy: req.user!.id,
-              template: await pdfTemplateService.loadDomainTemplate(domain.id)
-            }
-          }
-        });
-
-        // Update intervention's remaining amount
-        await tx.interventionRequest.update({
-          where: { id: interventionRequest.id },
-          data: {
-            remainingAmount: available - amount
-          }
-        });
-
-        // Return complete claim data
-        return tx.carbonClaim.findUnique({
+      } catch (pdfError) {
+        console.error('PDF generation failed:', pdfError);
+        // Create claim without PDF, set status to indicate pending PDF
+        claim.status = 'pending_pdf';
+        await tx.carbonClaim.update({
           where: { id: claim.id },
-          include: {
-            intervention: true,
-            statement: true
-          }
+          data: { status: 'pending_pdf' }
         });
-      });
-
-      console.log('Transaction completed successfully');
-
-      res.json({
-        success: true,
-        data: result
-      });
-
-    } catch (error) {
-      console.error('Error creating claim:', error);
-      
-      if (error instanceof Error) {
-        if (error.message.includes('Insufficient available amount')) {
-          res.status(400).json({
-            success: false,
-            message: error.message,
-            errorType: 'INSUFFICIENT_AMOUNT'
-          });
-        } else if (error.message.includes('Intervention not found')) {
-          res.status(404).json({
-            success: false,
-            message: error.message,
-            errorType: 'INTERVENTION_NOT_FOUND'
-          });
-        } else {
-          res.status(400).json({
-            success: false,
-            message: error.message,
-            errorType: 'UNKNOWN_ERROR'
-          });
-        }
-      } else {
-        next(error);
+        throw pdfError;
       }
+
+      // Create directory if it doesn't exist
+      const storageDir = path.join(process.cwd(), 'storage', 'claims', domain.id.toString());
+      await fs.mkdir(storageDir, { recursive: true });
+
+      // Save PDF file
+      const pdfPath = path.join('claims', domain.id.toString(), `${claim.id}.pdf`);
+      const fullPath = path.join(process.cwd(), 'storage', pdfPath);
+      await fs.writeFile(fullPath, pdfBuffer);
+
+      // Save metadata
+      await fs.writeFile(
+        `${fullPath}.meta.json`,
+        JSON.stringify({
+          domainId: domain.id,
+          createdAt: new Date().toISOString(),
+          createdBy: req.user!.id,
+          mimeType: 'application/pdf',
+          visibility: 'private'
+        })
+      );
+
+      // Create statement record
+      await tx.claimStatement.create({
+        data: {
+          claimId: claim.id,
+          pdfUrl: `/storage/${pdfPath}`,
+          templateVersion: '1.0',
+          metadata: {
+            generatedAt: new Date(),
+            generatedBy: req.user!.id,
+            template: await pdfTemplateService.loadDomainTemplate(domain.id)
+          }
+        }
+      });
+
+      // Update intervention's remaining amount
+      await tx.interventionRequest.update({
+        where: { id: interventionRequest.id },
+        data: {
+          remainingAmount: available - amount
+        }
+      });
+
+      return tx.carbonClaim.findUnique({
+        where: { id: claim.id },
+        include: {
+          intervention: true,
+          statement: true
+        }
+      });
+    });
+
+    console.log('Claim creation completed successfully');
+    res.json({ success: true, data: result });
+
+  } catch (error) {
+    console.error('Error in claim creation:', error);
+    
+    if (error instanceof Error) {
+      const errorResponse = {
+        success: false,
+        message: error.message,
+        errorType: error.message.includes('Insufficient available amount') ? 'INSUFFICIENT_AMOUNT' :
+                  error.message.includes('Intervention not found') ? 'INTERVENTION_NOT_FOUND' :
+                  error.message.includes('PDF generation failed') ? 'PDF_GENERATION_FAILED' :
+                  'UNKNOWN_ERROR'
+      };
+      
+      res.status(
+        errorResponse.errorType === 'INTERVENTION_NOT_FOUND' ? 404 :
+        errorResponse.errorType === 'PDF_GENERATION_FAILED' ? 500 :
+        400
+      ).json(errorResponse);
+    } else {
+      next(error);
     }
   }
-);
+});
 
 app.get(
   '/api/claims',
@@ -1337,44 +1327,75 @@ app.post(
             throw new Error('DELIVERY DATE is required');
           }
 
-          // Map CSV columns to database fields with proper type conversion
+          // Helper function to safely parse numbers
+          const parseNumber = (value: any): number => {
+            if (value === null || value === undefined || value === '') return 0;
+            // Convert to string, replace comma with period, and remove any non-numeric characters except period
+            const cleanValue = value.toString()
+              .replace(',', '.')
+              .replace(/[^\d.-]/g, '');
+            const parsed = parseFloat(cleanValue);
+            return isNaN(parsed) ? 0 : parsed;
+          };
+
+          // Helper function to parse boolean values
+          const parseBoolean = (value: any): boolean => {
+            if (typeof value === 'boolean') return value;
+            if (typeof value === 'string') {
+              return /^(yes|true|1|on)$/i.test(value.trim());
+            }
+            return false;
+          };
+
           const interventionData = {
             userId: req.user!.id,
-            clientName: record['CLIENT NAME'] || 'Unknown Client',
-            emissionsAbated: parseFloat(record['EMISSIONS ABATED'] || '0'),
+            clientName: record['CLIENT NAME']?.toString() || 'Unknown Client',
+            emissionsAbated: parseNumber(record['EMISSIONS ABATED']),
             date: parseDate(dateStr),
             interventionId,
-            deliveryTicketNumber: record['DELIVERY TICKET NUMBER'] || '',
-            materialName: record['MATERIAL NAME'] || '',
-            materialId: record['MATERIAL ID'] || '',
-            vendorName: record['VENDOR NAME'] || '',
-            quantity: parseFloat(record['QUANTITY'] || '0'),
-            unit: record['UNIT'] || '',
-            amount: parseFloat(record['AMOUNT [L]'] || '0'),
-            materialSustainabilityStatus: record['MATERIAL SUSTAINABILITY STATUS']?.toLowerCase() === 'true',
-            modality: record['MODALITY'] || 'Unknown',
-            interventionType: record['INTERVENTION TYPE'] || '',
-            lowCarbonFuel: record['BIOFUEL PRODUCT'] || 'n/a',
-            baselineFuelProduct: record['BASELINE FUEL PRODUCT'] || '',
-            typeOfVehicle: record['TYPE OF VEHICLE'] || '',
-            feedstock: record['TYPE OF FEEDSTOCK'] || 'n/a',
-            geography: record['GEOGRAPHY'] || 'Unknown',
-            emissionReductionPercentage: parseFloat(record['%_EMISSION_REDUCTION'] || '0'),
-            intensityOfBaseline: record['INTENSITY_OF_BASELINE'] || '',
-            intensityLowCarbonFuel: record['INTENSITY_LOW-CARBON_FUEL'] || '',
-            certificationScheme: record['CERTIFICATION'] || 'n/a',
-            scope: record['SCOPE'] || '',
-            thirdPartyVerifier: record['THIRD PARTY VERIFIER'] || '',
-            causality: /^(yes|true|1)$/i.test(record['CAUSALITY'] || ''),
-            additionality: /^(yes|true|1)$/i.test(record['ADDITIONALITY'] || ''),
-            standards: record['STANDARDS'] || '',
+            deliveryTicketNumber: record['DELIVERY TICKET NUMBER']?.toString() || '',
+            materialName: record['MATERIAL NAME']?.toString() || '',
+            materialId: record['MATERIAL ID']?.toString() || '',
+            vendorName: record['VENDOR NAME']?.toString() || '',
+            quantity: parseNumber(record['QUANTITY']),
+            unit: record['UNIT']?.toString() || '',
+            amount: parseNumber(record['AMOUNT [L]']),
+            materialSustainabilityStatus: parseBoolean(record['MATERIAL SUSTAINABILITY STATUS']),
+            modality: record['MODALITY']?.toString() || 'Unknown',
+            interventionType: record['INTERVENTION TYPE']?.toString() || '',
+            lowCarbonFuel: record['BIOFUEL PRODUCT']?.toString() || 'n/a',
+            baselineFuelProduct: record['BASELINE FUEL PRODUCT']?.toString() || '',
+            typeOfVehicle: record['TYPE OF VEHICLE']?.toString() || '',
+            feedstock: record['TYPE OF FEEDSTOCK']?.toString() || 'n/a',
+            geography: record['GEOGRAPHY']?.toString() || 'Unknown',
+            emissionReductionPercentage: parseNumber(record['%_EMISSION_REDUCTION']),
+            intensityOfBaseline: record['INTENSITY_OF_BASELINE']?.toString() || '',
+            intensityLowCarbonFuel: record['INTENSITY_LOW-CARBON_FUEL']?.toString() || '',
+            certificationScheme: record['CERTIFICATION']?.toString() || 'n/a',
+            scope: record['SCOPE']?.toString() || '',
+            thirdPartyVerifier: record['THIRD PARTY VERIFIER']?.toString() || '',
+            causality: parseBoolean(record['CAUSALITY']),
+            additionality: parseBoolean(record['ADDITIONALITY']),
+            standards: record['STANDARDS']?.toString() || '',
             status: 'Verified',
             submissionDate: new Date(),
-            ghgEmissionSaving: '0',
-            vintage: new Date().getFullYear().toString(),
-            thirdPartyVerification: 'Pending',
-            remainingAmount: '0'
+            ghgEmissionSaving: record['GHG_EMISSION_SAVING']?.toString() || '0',
+            vintage: parseInt(record['VINTAGE']?.toString().replace(',', '.')) || new Date().getFullYear(),
+            thirdPartyVerification: record['THIRD_PARTY_VERIFICATION']?.toString() || 'Pending',
+            // Convert numeric fields to proper floats
+            totalAmount: parseNumber(record['EMISSIONS ABATED']), // Same as emissionsAbated
+            remainingAmount: parseNumber(record['EMISSIONS ABATED']) // Initially same as emissionsAbated
           };
+
+          // Additional validation to ensure all required fields are present and correctly typed
+          if (isNaN(interventionData.emissionsAbated)) {
+            console.warn(`Invalid emissions abated value for intervention ${interventionId}, defaulting to 0`);
+            interventionData.emissionsAbated = 0;
+          }
+
+          if (!interventionData.interventionId) {
+            throw new Error('Intervention ID is required');
+          }
 
           return interventionData;
         } catch (err) {

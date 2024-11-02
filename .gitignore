@@ -1,17 +1,5 @@
-﻿# Environment files
-.env
-.env.local
-.env.*.local
-.env.development
-.env.test
-.env.production
-
-# Dependencies
+﻿# Node modules
 node_modules/
-
-# Build output
-dist/
-build/
 
 # Logs
 logs/
@@ -26,15 +14,3 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
-
-# Storage
-/storage/*
-!/storage/.gitkeep
-/public/storage
-/temp
-
-# Build artifacts
-.next/
-out/
-build/
-dist/

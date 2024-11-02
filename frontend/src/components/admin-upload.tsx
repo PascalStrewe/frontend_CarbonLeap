@@ -35,6 +35,7 @@ interface InterventionData {
   lowCarbonFuel: string; // Defaults to "n/a" if missing
   feedstock: string;      // Defaults to "n/a" if missing
   certificationScheme: string; // Defaults to "n/a" if missing
+  vintage: number;        // Add this line
 }
 
 interface Domain {
@@ -267,7 +268,9 @@ const AdminUpload = () => {
           status: 'Verified', // Default status
           lowCarbonFuel: columnIndices.lowCarbonFuel !== -1 && values[columnIndices.lowCarbonFuel] ? values[columnIndices.lowCarbonFuel] : 'n/a',
           feedstock: columnIndices.feedstock !== -1 && values[columnIndices.feedstock] ? values[columnIndices.feedstock] : 'n/a',
-          certificationScheme: columnIndices.certificationScheme !== -1 && values[columnIndices.certificationScheme] ? values[columnIndices.certificationScheme] : 'n/a'
+          certificationScheme: columnIndices.certificationScheme !== -1 && values[columnIndices.certificationScheme] ? values[columnIndices.certificationScheme] : 'n/a',
+          // Handle vintage field by converting string to integer
+          vintage: parseInt(values[values.findIndex(col => col.toUpperCase() === 'VINTAGE')]?.replace(',', '.')) || 0
         };
 
         // Validate record (excluding optional fields)
