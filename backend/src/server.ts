@@ -293,15 +293,26 @@ app.use('/storage', authenticateToken, async (req: AuthRequest, res: Response, n
         // If no metadata exists, continue serving the file
       }
 
-      // Set appropriate headers
-      res.setHeader('Content-Type', getMimeType(filePath));
-      if (process.env.NODE_ENV === 'production') {
-        res.setHeader('Cache-Control', 'public, max-age=31536000'); // 1 year
+      // Read the file
+      const fileContent = await fs.readFile(filePath);
+
+      // Set content type based on file extension
+      const ext = path.extname(filePath).toLowerCase();
+      if (ext === '.pdf') {
+        res.setHeader('Content-Type', 'application/pdf');
+      } else {
+        res.setHeader('Content-Type', getMimeType(filePath));
       }
 
-      // Stream the file
-      const fileStream = fs.createReadStream(filePath);
-      fileStream.pipe(res);
+      // Set additional headers
+      res.setHeader('Content-Length', fileContent.length);
+      res.setHeader('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Pragma', 'no-cache');
+
+      // Send the file
+      res.send(fileContent);
+
     } catch (error) {
       if (error.code === 'ENOENT') {
         res.status(404).json({ error: 'File not found' });
@@ -1089,7 +1100,11 @@ app.post('/api/claims', authenticateToken, async (req: AuthRequest, res: Respons
           metadata: {
             generatedAt: new Date(),
             generatedBy: req.user!.id,
-            template: await pdfTemplateService.loadDomainTemplate(domain.id)
+            template: {
+              name: domain.name,
+              version: '1.0',
+              timestamp: new Date().toISOString()
+            }
           }
         }
       });
@@ -1483,29 +1498,7 @@ app.get('/api/claims/:id/preview-statement', authenticateToken, async (req: Auth
   try {
     const claimId = req.params.id;
 
-    // Log the search criteria
-    console.log('Searching for claim with criteria:', {
-      id: claimId,
-      domainId: req.user?.domainId
-    });
-
     // First check if claim exists at all
-    const claimExists = await prisma.carbonClaim.findUnique({
-      where: { id: claimId },
-    });
-
-    console.log('Claim exists?:', !!claimExists);
-
-    if (!claimExists) {
-      console.log('Claim not found with ID:', claimId);
-      res.status(404).json({
-        success: false,
-        message: 'Claim not found',
-      });
-      return;
-    }
-
-    // Fetch full claim data with relations
     const claim = await prisma.carbonClaim.findFirst({
       where: { 
         id: claimId,
@@ -1518,31 +1511,10 @@ app.get('/api/claims/:id/preview-statement', authenticateToken, async (req: Auth
       }
     });
 
-    console.log('Found claim data:', {
-      exists: !!claim,
-      id: claim?.id,
-      domainId: claim?.claimingDomainId,
-      hasIntervention: !!claim?.intervention,
-      hasDomain: !!claim?.claimingDomain
-    });
-
     if (!claim) {
-      res.status(403).json({
-        success: false,
-        message: 'Access denied or claim not found',
-      });
-      return;
-    }
-
-    // Get domain information
-    const domain = await prisma.domain.findUnique({
-      where: { id: req.user!.domainId },
-    });
-
-    if (!domain) {
       res.status(404).json({
         success: false,
-        message: 'Domain not found',
+        message: 'Claim not found or access denied',
       });
       return;
     }
@@ -1554,19 +1526,33 @@ app.get('/api/claims/:id/preview-statement', authenticateToken, async (req: Auth
       claim.claimingDomain
     );
 
-    // Set response headers
+    // Set correct headers
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'inline; filename=claim-preview.pdf');
+    res.setHeader('Content-Length', pdfBuffer.length);
     
-    // Send the PDF
+    // Clear any existing headers that might interfere
+    res.removeHeader('X-Content-Type-Options');
+    
+    // Send the PDF buffer directly
     res.send(Buffer.from(pdfBuffer));
 
   } catch (error) {
-    console.error('Error in preview-statement endpoint:', error);
-    next(error);
+    console.error('Error generating preview:', error);
+    
+    // If headers haven't been sent yet, send error response
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to generate preview',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } else {
+      // If headers were already sent, use next(error)
+      next(error);
+    }
   }
 });
-
 app.get('/api/domains/available', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
     const domainPartnerships = await prisma.domainPartnership.findMany({

@@ -1,246 +1,216 @@
-// backend/src/services/PDFTemplateService.ts
-
 import { PrismaClient } from '@prisma/client';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import QRCode from 'qrcode';
 
 export class PDFTemplateService {
   private prisma: PrismaClient;
   private readonly templateBasePath: string;
+  private readonly privateKeyPath: string;
+  private readonly publicKeyPath: string;
 
   constructor() {
     this.prisma = new PrismaClient();
-    // Use path.join for cross-platform compatibility
-    this.templateBasePath = path.join(__dirname, '..', 'data', 'templates', 'domains');
+    this.templateBasePath = path.join(process.cwd(), 'src', 'data', 'templates', 'domains');
+    this.privateKeyPath = path.join(process.cwd(), 'private', 'private.pem');
+    this.publicKeyPath = path.join(process.cwd(), 'private', 'public.pem');
   }
 
-  async loadDomainTemplate(domainId: number): Promise<any> {
+  private async ensureKeyPair() {
     try {
-      // Check if domain exists
-      const domain = await this.prisma.domain.findUnique({
-        where: { id: domainId }
+      await fs.access(this.privateKeyPath);
+      await fs.access(this.publicKeyPath);
+    } catch {
+      // Generate new key pair if they don't exist
+      const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', {
+        modulusLength: 4096,
+        publicKeyEncoding: {
+          type: 'spki',
+          format: 'pem'
+        },
+        privateKeyEncoding: {
+          type: 'pkcs8',
+          format: 'pem'
+        }
       });
 
-      if (!domain) {
-        throw new Error(`Domain not found with ID: ${domainId}`);
-      }
+      await fs.mkdir(path.dirname(this.privateKeyPath), { recursive: true });
+      await fs.writeFile(this.privateKeyPath, privateKey);
+      await fs.writeFile(this.publicKeyPath, publicKey);
+    }
+  }
 
-      // Convert domain name to folder-safe format
-      const domainFolder = domain.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const templatePath = path.join(this.templateBasePath, domainFolder, 'template.json');
+  private async signPDF(pdfBytes: Uint8Array, metadata: any): Promise<{ signature: string; verificationUrl: string }> {
+    const hash = crypto.createHash('sha256');
+    hash.update(pdfBytes);
+    hash.update(JSON.stringify(metadata));
+    const contentHash = hash.digest('hex');
 
-      // Check if template directory exists
+    const privateKey = await fs.readFile(this.privateKeyPath, 'utf-8');
+    const signer = crypto.createSign('SHA256');
+    signer.update(contentHash);
+    signer.end();
+    
+    const signature = signer.sign(privateKey, 'base64');
+    
+    // Create verification URL
+    const verificationData = {
+      hash: contentHash,
+      signature,
+      timestamp: new Date().toISOString(),
+      metadata
+    };
+
+    // In production, this would be your verification endpoint
+    const verificationUrl = `https://verify.carbonleap.com/verify?data=${encodeURIComponent(JSON.stringify(verificationData))}`;
+    
+    return { signature, verificationUrl };
+  }
+
+  private async generateQRCode(url: string): Promise<string> {
+    return await QRCode.toDataURL(url);
+  }
+
+  private async importTemplate(domainName: string) {
+    try {
+      const domainFolder = domainName.toLowerCase();
+      const defaultDomainFolder = '@carbonleap.nl';
+      
+      // Try domain-specific template
+      const domainTemplatePath = path.join(this.templateBasePath, domainFolder, 'template.js');
+      
       try {
-        await fs.access(path.dirname(templatePath));
+        await fs.access(domainTemplatePath);
+        delete require.cache[require.resolve(domainTemplatePath)];
+        const domainTemplate = require(domainTemplatePath);
+        
+        if (domainTemplate && typeof domainTemplate.generatePDF === 'function') {
+          return domainTemplate;
+        }
       } catch (error) {
-        console.log(`Creating template directory for domain: ${domain.name}`);
-        await fs.mkdir(path.dirname(templatePath), { recursive: true });
+        console.log('No domain-specific template found, falling back to default');
       }
-
-      // Try to read template file
-      try {
-        const templateContent = await fs.readFile(templatePath, 'utf-8');
-        return JSON.parse(templateContent);
-      } catch (error) {
-        // If template doesn't exist, create default template
-        const defaultTemplate = {
-          headerImage: null,
-          companyName: domain.companyName,
-          primaryColor: '#103D5E',
-          secondaryColor: '#4A90E2',
-          fontSize: {
-            title: 24,
-            heading: 18,
-            body: 12
-          },
-          margins: {
-            top: 50,
-            right: 50,
-            bottom: 50,
-            left: 50
-          }
-        };
-
-        await this.saveTemplate(domainId, defaultTemplate);
+  
+      // Fall back to default template
+      const defaultTemplatePath = path.join(this.templateBasePath, defaultDomainFolder, 'template.js');
+      
+      delete require.cache[require.resolve(defaultTemplatePath)];
+      const defaultTemplate = require(defaultTemplatePath);
+      
+      if (defaultTemplate && typeof defaultTemplate.generatePDF === 'function') {
         return defaultTemplate;
       }
+      
+      throw new Error('Invalid template format');
     } catch (error) {
-      console.error('Error loading domain template:', error);
-      throw new Error(`Failed to load template for domain ${domainId}: ${error.message}`);
+      throw new Error(`Failed to import template: ${error.message}`);
     }
   }
 
   async generateClaimStatement(claim: any, intervention: any, domain: any): Promise<Uint8Array> {
     try {
+      await this.ensureKeyPair();
+      
       // Load domain template
-      const template = await this.loadDomainTemplate(domain.id);
-
+      const template = await this.importTemplate(domain.name);
+      
       // Create PDF document
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage([595.276, 841.890]); // A4 size
-      const { width, height } = page.getSize();
-      
-      try {
-        // Load fonts
-        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-        const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  
+      // Prepare fonts
+      const fonts = {
+        regular: await pdfDoc.embedFont(StandardFonts.Helvetica),
+        bold: await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+      };
+  
+      // Metadata for verification
+      const metadata = {
+        claimId: claim.id,
+        interventionId: intervention.interventionId,
+        domainId: domain.id,
+        timestamp: new Date().toISOString(),
+        amount: claim.amount,
+        vintage: claim.vintage
+      };
 
-        // Set initial position for content
-        let currentY = height - template.margins.top;
-        const leftMargin = template.margins.left;
-
-        // Add header image if exists
-        if (template.headerImage) {
-          try {
-            const imgData = template.headerImage.split(',')[1];
-            const imageBytes = Buffer.from(imgData, 'base64');
-            const image = await pdfDoc.embedPng(imageBytes);
-            const imgDims = image.scale(0.5);
-            
-            page.drawImage(image, {
-              x: (width - imgDims.width) / 2,
-              y: currentY - imgDims.height,
-              width: imgDims.width,
-              height: imgDims.height,
-            });
-            
-            currentY -= (imgDims.height + 20);
-          } catch (imgError) {
-            console.warn('Failed to embed header image:', imgError);
-            // Continue without the image
-          }
-        }
-
-        // Add title
-        page.drawText('Carbon Reduction Claim Statement', {
-          x: leftMargin,
-          y: currentY,
-          size: template.fontSize.title,
-          font: boldFont,
-          color: rgb(0.063, 0.239, 0.368) // #103D5E
-        });
-
-        currentY -= 40;
-
-        // Add claim details
-        const details = [
-          { label: 'Claim ID:', value: claim.id },
-          { label: 'Intervention ID:', value: intervention.interventionId },
-          { label: 'Amount Claimed:', value: `${claim.amount.toFixed(2)} tCO2e` },
-          { label: 'Vintage:', value: claim.vintage.toString() },
-          { label: 'Valid Until:', value: new Date(claim.expiryDate).toLocaleDateString() },
-          { label: 'Intervention Type:', value: intervention.modality },
-          { label: 'Geography:', value: intervention.geography },
-          { label: 'Certification:', value: intervention.certificationScheme || 'N/A' }
-        ];
-
-        for (const detail of details) {
-          page.drawText(detail.label, {
-            x: leftMargin,
-            y: currentY,
-            size: template.fontSize.body,
-            font: boldFont,
-            color: rgb(0.063, 0.239, 0.368)
-          });
-
-          page.drawText(detail.value, {
-            x: leftMargin + 150,
-            y: currentY,
-            size: template.fontSize.body,
-            font: font,
-            color: rgb(0, 0, 0)
-          });
-
-          currentY -= 25;
-        }
-
-        // Add verification section
-        currentY -= 20;
-        page.drawText('Verification', {
-          x: leftMargin,
-          y: currentY,
-          size: template.fontSize.heading,
-          font: boldFont,
-          color: rgb(0.063, 0.239, 0.368)
-        });
-
-        currentY -= 30;
-        const verificationText = 
-          'This document certifies that the above carbon reduction claim ' +
-          'has been verified and recorded on the CarbonLeap platform. ' +
-          'The claim is based on actual emission reductions achieved ' +
-          'through the specified intervention.';
-
-        // Word wrap the verification text
-        const words = verificationText.split(' ');
-        let line = '';
-        const maxWidth = width - template.margins.left - template.margins.right;
-
-        for (const word of words) {
-          const testLine = line + word + ' ';
-          const lineWidth = font.widthOfTextAtSize(testLine, template.fontSize.body);
-          
-          if (lineWidth > maxWidth && line.length > 0) {
-            page.drawText(line, {
-              x: leftMargin,
-              y: currentY,
-              size: template.fontSize.body,
-              font: font,
-              color: rgb(0, 0, 0)
-            });
-            line = word + ' ';
-            currentY -= 20;
-          } else {
-            line = testLine;
-          }
-        }
-        
-        if (line.length > 0) {
-          page.drawText(line, {
-            x: leftMargin,
-            y: currentY,
-            size: template.fontSize.body,
-            font: font,
-            color: rgb(0, 0, 0)
-          });
-        }
-
-        // Add QR code or other verification elements here
-
-        return await pdfDoc.save();
-      } catch (error) {
-        console.error('Error generating PDF content:', error);
-        throw new Error('Failed to generate PDF content');
-      }
-    } catch (error) {
-      console.error('Error in generateClaimStatement:', error);
-      throw new Error(`Failed to generate claim statement: ${error.message}`);
-    }
-  }
-
-  async saveTemplate(domainId: number, templateData: any): Promise<void> {
-    try {
-      const domain = await this.prisma.domain.findUnique({
-        where: { id: domainId }
+      // Generate base PDF
+      await template.generatePDF(pdfDoc, page, {
+        claim,
+        intervention,
+        domain,
+        fonts
       });
 
-      if (!domain) {
-        throw new Error(`Domain not found with ID: ${domainId}`);
-      }
+      // Get initial PDF bytes for signing
+      const initialBytes = await pdfDoc.save();
 
-      const domainFolder = domain.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const templateDir = path.join(this.templateBasePath, domainFolder);
-      const templatePath = path.join(templateDir, 'template.json');
+      // Sign the PDF
+      const { signature, verificationUrl } = await this.signPDF(initialBytes, metadata);
 
-      // Create directory if it doesn't exist
-      await fs.mkdir(templateDir, { recursive: true });
+      // Generate QR code for verification
+      const qrCodeDataUrl = await this.generateQRCode(verificationUrl);
 
-      // Save template
-      await fs.writeFile(templatePath, JSON.stringify(templateData, null, 2));
+      // Add verification information to the PDF
+      const verificationPage = pdfDoc.addPage([595.276, 841.890]);
+      const { width, height } = verificationPage.getSize();
+
+      // Add QR code
+      const qrCodeImage = await pdfDoc.embedPng(qrCodeDataUrl);
+      const qrDimensions = 200;
+      verificationPage.drawImage(qrCodeImage, {
+        x: (width - qrDimensions) / 2,
+        y: height - 300,
+        width: qrDimensions,
+        height: qrDimensions
+      });
+
+      // Add verification text
+      verificationPage.drawText('Verification Information', {
+        x: 50,
+        y: height - 50,
+        size: 16,
+        font: fonts.bold
+      });
+
+      verificationPage.drawText('This document is digitally signed and can be verified online.', {
+        x: 50,
+        y: height - 80,
+        size: 12,
+        font: fonts.regular
+      });
+
+      verificationPage.drawText(`Document ID: ${claim.id}`, {
+        x: 50,
+        y: height - 400,
+        size: 10,
+        font: fonts.regular
+      });
+
+      verificationPage.drawText(`Digital Signature: ${signature.substring(0, 64)}...`, {
+        x: 50,
+        y: height - 420,
+        size: 10,
+        font: fonts.regular
+      });
+
+      verificationPage.drawText(`Generated: ${new Date().toISOString()}`, {
+        x: 50,
+        y: height - 440,
+        size: 10,
+        font: fonts.regular
+      });
+
+      // Save final PDF
+      return await pdfDoc.save({
+        addDefaultPage: false,
+        useObjectStreams: true
+      });
     } catch (error) {
-      console.error('Error saving template:', error);
-      throw new Error(`Failed to save template for domain ${domainId}: ${error.message}`);
+      console.error('Error generating claim statement:', error);
+      throw new Error(`Failed to generate claim statement: ${error.message}`);
     }
   }
 }

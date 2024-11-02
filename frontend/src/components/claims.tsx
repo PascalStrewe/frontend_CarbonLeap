@@ -89,17 +89,25 @@ const CarbonClaims = () => {
   const fetchClaims = useCallback(async () => {
     if (!user?.domain) return;
     
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setError('Not authenticated');
+      return;
+    }
+  
     try {
       const response = await fetch('/api/claims', {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       });
   
       if (!response.ok) {
-        throw new Error('Failed to fetch claims');
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to fetch claims');
       }
+  
       const data = await response.json();
       if (data.success) {
         setClaims(data.data);
@@ -132,19 +140,21 @@ const CarbonClaims = () => {
       const data = await response.json();
       
       const transformedInterventions = data
-        .filter((intervention: any) => intervention.emissionsAbated > 0)
-        .map((intervention: any): Intervention => ({
-          id: intervention.id,
-          interventionId: intervention.interventionId,
-          clientName: intervention.clientName || 'Unknown Client',
-          emissionsAbated: parseFloat(intervention.emissionsAbated) || 0,
-          date: typeof intervention.date === 'string' ? intervention.date : new Date(intervention.date).toLocaleDateString(),
-          modality: intervention.modality || 'Unknown',
-          geography: intervention.geography || 'Unknown',
-          additionality: intervention.additionality ? 'Yes' : 'No',
-          causality: intervention.causality ? 'Yes' : 'No',
-          status: (intervention.status || 'unknown').toLowerCase()
-        }));
+      .filter((intervention: any) => intervention.emissionsAbated > 0)
+      .map((intervention: any): Intervention => ({
+        id: intervention.id,
+        interventionId: intervention.interventionId,
+        clientName: intervention.clientName || 'Unknown Client',
+        emissionsAbated: parseFloat(intervention.emissionsAbated) || 0,
+        date: typeof intervention.date === 'string' ? intervention.date : new Date(intervention.date).toLocaleDateString(),
+        modality: intervention.modality || 'Unknown',
+        geography: intervention.geography || 'Unknown',
+        additionality: intervention.additionality ? 'Yes' : 'No',
+        causality: intervention.causality ? 'Yes' : 'No',
+        status: intervention.status ? intervention.status.toLowerCase().trim() : 'unknown'
+      }));
+    
+    console.log('Transformed interventions:', transformedInterventions); // Debug line
   
       setInterventions(transformedInterventions);
     } catch (error) {
@@ -177,7 +187,11 @@ const CarbonClaims = () => {
   }, [claims, interventions]);
 
   const availableInterventions = interventions.filter(
-    intervention => calculateAvailableAmount(intervention.interventionId) > 0
+    intervention => {
+      console.log('Intervention:', intervention.interventionId, 'Status:', intervention.status); // Debug line
+      return calculateAvailableAmount(intervention.interventionId) > 0 &&
+        intervention.status.toLowerCase().trim() === 'verified';
+    }
   );
 
   const handlePreviewStatement = async (claim: Claim) => {
@@ -185,13 +199,19 @@ const CarbonClaims = () => {
       const response = await fetch(`/api/claims/${claim.id}/preview-statement`, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Accept': 'application/pdf',
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
         }
       });
       
       if (!response.ok) {
-        throw new Error('Failed to preview statement');
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/pdf')) {
+        throw new Error('Received invalid content type from server');
       }
       
       const blob = await response.blob();
@@ -255,30 +275,66 @@ const CarbonClaims = () => {
   };
 
   const handleDownloadStatement = async (claim: Claim) => {
-    if (!claim.statement?.pdfUrl) return;
+    if (!claim.statement?.pdfUrl) {
+      setError('No statement available for this claim');
+      return;
+    }
     
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setError('Not authenticated');
+      return;
+    }
+  
     try {
+      setError(null);
+      // Log the complete URL and claim data for debugging
+      console.log('Claim data:', claim);
+      console.log('Statement URL:', claim.statement.pdfUrl);
+      console.log('Full URL:', window.location.origin + claim.statement.pdfUrl);
+      
       const response = await fetch(claim.statement.pdfUrl, {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/pdf',
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
         }
       });
-      
+  
+      // Log response details for debugging
+      console.log('Response status:', response.status);
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+  
       if (!response.ok) {
-        throw new Error('Failed to download statement');
+        console.error('Server response not OK:', response.status, response.statusText);
+        const errorText = await response.text();
+        console.error('Error response body:', errorText);
+        throw new Error(`Failed to download statement (${response.status})`);
       }
-      
+  
       const blob = await response.blob();
+      console.log('Blob details:', {
+        type: blob.type,
+        size: blob.size
+      });
+  
+      // Create filename
+      const filename = `claim-statement-${claim.id}.pdf`;
+  
+      // Create download URL and trigger download
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
+      a.style.display = 'none';
       a.href = url;
-      a.download = `claim-statement-${claim.id}.pdf`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      
+      // Cleanup
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+  
     } catch (error) {
       console.error('Error downloading statement:', error);
       setError(error instanceof Error ? error.message : 'Failed to download statement');

@@ -22,3 +22,6 @@ out/
 
 # TypeScript incremental build files
 .tsbuildinfo
+
+# Private keys
+/private/*.pem
