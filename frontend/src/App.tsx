@@ -1,6 +1,6 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { Login, DomainSetup } from './components/auth-pages';
+import { Login, Register } from './components/auth-pages';
 import Dashboard from './components/carbon-dashboard';
 import InterventionRequest from './components/intervention-request';
 import ReportingPage from './components/reporting-page';
@@ -13,15 +13,17 @@ import PartnershipManagement from './components/partnership-management';
 import ChatWithData from './components/chat-with-data';
 import CarbonClaims from './components/claims';
 
+const LoadingScreen = () => (
+  <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
+    <div className="text-[#103D5E]">Loading...</div>
+  </div>
+);
+
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, isLoading } = useAuth();
   
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
-        <div className="text-[#103D5E]">Loading...</div>
-      </div>
-    );
+    return <LoadingScreen />;
   }
   
   if (!user) {
@@ -35,11 +37,7 @@ const AdminRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, isLoading } = useAuth();
   
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
-        <div className="text-[#103D5E]">Loading...</div>
-      </div>
-    );
+    return <LoadingScreen />;
   }
   
   if (!user?.isAdmin) {
@@ -53,18 +51,21 @@ function AppRoutes() {
   const { user, isLoading } = useAuth();
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-[#DAE9E6] flex items-center justify-center">
-        <div className="text-[#103D5E]">Loading...</div>
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   return (
     <Routes>
       {/* Public routes */}
-      <Route path="/login" element={user ? <Navigate to="/dashboard" /> : <Login />} />
-      <Route path="/domain-setup" element={user ? <Navigate to="/dashboard" /> : <DomainSetup />} />
+      <Route 
+        path="/login" 
+        element={user ? <Navigate to="/dashboard" /> : <Login />} 
+      />
+      
+      <Route 
+        path="/register" 
+        element={user ? <Navigate to="/dashboard" /> : <Register />} 
+      />
       
       {/* Protected routes */}
       <Route 
@@ -75,6 +76,7 @@ function AppRoutes() {
           </ProtectedRoute>
         } 
       />
+      
       <Route 
         path="/request" 
         element={
@@ -83,6 +85,7 @@ function AppRoutes() {
           </ProtectedRoute>
         } 
       />
+      
       <Route 
         path="/claims" 
         element={
@@ -91,6 +94,7 @@ function AppRoutes() {
           </ProtectedRoute>
         } 
       />
+      
       <Route 
         path="/reports" 
         element={
@@ -99,6 +103,7 @@ function AppRoutes() {
           </ProtectedRoute>
         } 
       />
+      
       <Route 
         path="/analytics" 
         element={
@@ -107,6 +112,7 @@ function AppRoutes() {
           </ProtectedRoute>
         } 
       />
+      
       <Route 
         path="/partnerships" 
         element={
@@ -115,6 +121,7 @@ function AppRoutes() {
           </ProtectedRoute>
         } 
       />
+      
       <Route 
         path="/transfers" 
         element={
@@ -123,6 +130,7 @@ function AppRoutes() {
           </ProtectedRoute>
         } 
       />
+      
       <Route 
         path="/chat-with-data" 
         element={
@@ -131,12 +139,15 @@ function AppRoutes() {
           </ProtectedRoute>
         } 
       />
+      
       <Route 
         path="/pending" 
         element={
           <ProtectedRoute>
             <div className="min-h-screen bg-[#DAE9E6] p-8">
-              <h1 className="text-2xl font-bold text-[#103D5E]">Pending Requests Coming Soon</h1>
+              <h1 className="text-2xl font-bold text-[#103D5E]">
+                Pending Requests Coming Soon
+              </h1>
             </div>
           </ProtectedRoute>
         } 
@@ -152,13 +163,13 @@ function AppRoutes() {
         } 
       />
       
-      {/* Redirect root to dashboard or login */}
+      {/* Root redirect */}
       <Route 
         path="/" 
         element={user ? <Navigate to="/dashboard" /> : <Navigate to="/login" />} 
       />
       
-      {/* Catch all route */}
+      {/* 404 route */}
       <Route 
         path="*" 
         element={

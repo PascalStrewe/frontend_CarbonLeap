@@ -57,6 +57,25 @@ interface InterventionRecord {
   certificationScheme?: string;
 }
 
+interface RegistrationRequest {
+  email: string;
+  password: string;
+  companyName: string;
+  domainName: string;
+  supplyChainLevel: string;
+}
+
+interface RegistrationResponse {
+  success: boolean;
+  message: string;
+  data?: {
+    email: string;
+    domain: string;
+    companyName: string;
+  };
+  error?: string;
+}
+
 
 const prisma = new PrismaClient({
   log: [
@@ -445,10 +464,7 @@ app.post('/api/login', async (
 });
 
 // Domain routes
-app.post(
-  '/api/domains',
-  authenticateToken,
-  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+app.post('/api/domains', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.user?.isAdmin) {
         res.status(403).json({
@@ -569,6 +585,147 @@ app.post(
     }
   }
 );
+
+// Public registration endpoint
+app.post('/api/register', async (req: Request<{}, {}, RegistrationRequest>, res: Response<RegistrationResponse>, next: NextFunction): Promise<void> => {
+  try {
+    const { email, password, companyName, domainName, supplyChainLevel } = req.body;
+
+    // Enhanced input validation
+    const validationErrors = [];
+    if (!email || !email.includes('@')) validationErrors.push('Valid email is required');
+    if (!password || password.length < 8) validationErrors.push('Password must be at least 8 characters');
+    if (!companyName || companyName.trim().length < 2) validationErrors.push('Company name is required');
+    if (!domainName || domainName.trim().length < 2) validationErrors.push('Domain name is required');
+    if (!supplyChainLevel || isNaN(parseInt(supplyChainLevel))) validationErrors.push('Valid supply chain level is required');
+
+    if (validationErrors.length > 0) {
+      res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        error: validationErrors.join(', ')
+      });
+      return;
+    }
+
+    // Check for existing email with proper error handling
+    const existingUser = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (existingUser) {
+      res.status(409).json({
+        success: false,
+        message: 'Email already registered',
+        error: 'This email address is already in use'
+      });
+      return;
+    }
+
+    // Check for existing domain with proper error handling
+    const existingDomain = await prisma.domain.findFirst({
+      where: {
+        OR: [
+          { name: domainName.toLowerCase() },
+          { companyName: companyName.toLowerCase() }
+        ]
+      }
+    });
+
+    if (existingDomain) {
+      res.status(409).json({
+        success: false,
+        message: 'Domain or company name already exists',
+        error: existingDomain.name === domainName.toLowerCase() 
+          ? 'This domain name is already taken'
+          : 'This company name is already registered'
+      });
+      return;
+    }
+
+    // Hash password with proper error handling
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create domain and user in transaction with proper error handling
+    const { user, domain } = await prisma.$transaction(async (tx) => {
+      // Create domain with proper supply chain level
+      const newDomain = await tx.domain.create({
+        data: {
+          name: domainName.toLowerCase(),
+          companyName: companyName.trim(),
+          supplyChainLevel: parseInt(supplyChainLevel)
+        },
+      });
+
+      // Create user with proper defaults
+      const newUser = await tx.user.create({
+        data: {
+          email: email.toLowerCase(),
+          password: hashedPassword,
+          domainId: newDomain.id,
+          isAdmin: false,
+          isVerified: false
+        },
+      });
+
+      return { user: newUser, domain: newDomain };
+    });
+
+    // Generate verification token (for future email verification)
+    const verificationToken = jwt.sign(
+      { userId: user.id },
+      process.env.JWT_SECRET!,
+      { expiresIn: '24h' }
+    );
+
+    // Store verification token in database (assuming you'll add this table later)
+    // await prisma.verificationToken.create({
+    //   data: {
+    //     token: verificationToken,
+    //     userId: user.id,
+    //     expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+    //   }
+    // });
+
+    // Send verification email (commented out for now)
+    // try {
+    //   await emailService.sendVerificationEmail(email, verificationToken);
+    // } catch (emailError) {
+    //   console.error('Failed to send verification email:', emailError);
+    //   // Continue registration process even if email fails
+    // }
+
+    res.status(201).json({
+      success: true,
+      message: 'Registration successful', // In future: 'Please check your email to verify your account'
+      data: {
+        email: user.email,
+        domain: domain.name,
+        companyName: domain.companyName,
+      }
+    });
+
+    // Log successful registration
+    console.log(`New registration: ${email} for company ${companyName}`);
+
+  } catch (error) {
+    console.error('Registration error:', error);
+    
+    if (error instanceof Error) {
+      // Handle specific database errors
+      if (error.message.includes('Unique constraint')) {
+        res.status(409).json({
+          success: false,
+          message: 'Registration failed',
+          error: 'Email or domain name already exists'
+        });
+        return;
+      }
+    }
+    
+    next(error);
+  }
+});
 
 app.get(
   '/api/users',
