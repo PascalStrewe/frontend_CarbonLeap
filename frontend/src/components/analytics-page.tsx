@@ -1,9 +1,5 @@
-// C:/Users/PascalStrewe/Downloads/frontend_CarbonLeap/src/components/analytics-page.tsx
-
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import Navigation from './Navigation';
-
-
 import { 
   Download, 
   Filter, 
@@ -104,9 +100,6 @@ const CustomTooltip: React.FC<CustomTooltipProps> = ({ active, payload, label })
 
 const ReportingPage: React.FC = () => {
   const { interventionData, refreshInterventions } = useInterventions();
-  useEffect(() => {
-    refreshInterventions();
-  }, [refreshInterventions]);
 
   const [filters, setFilters] = useState<FilterState>({
     dateRange: { start: '', end: '' },
@@ -124,13 +117,17 @@ const ReportingPage: React.FC = () => {
   const [showFilters, setShowFilters] = useState(false);
   const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
 
+  useEffect(() => {
+    refreshInterventions();
+    const interval = setInterval(refreshInterventions, 5000);
+    return () => clearInterval(interval);
+  }, [refreshInterventions]);
+
   const processedData = useMemo(() => {
-    // First filter for verified interventions only
     const verifiedData = interventionData.filter(item => 
       item.status?.toLowerCase() === 'verified'
     );
   
-    // Then apply the rest of the filters
     return verifiedData.filter(item => {
       const searchLower = searchTerm.toLowerCase();
       const matchesSearch = !searchTerm || 
@@ -165,63 +162,153 @@ const ReportingPage: React.FC = () => {
   }, [interventionData, searchTerm, filters, sortConfig]);
 
   const chartData = useMemo(() => {
-    const modalityStats = processedData.reduce((acc, item) => {
-      if (!acc[item.modality]) {
-        acc[item.modality] = {
-          name: item.modality,
+    // Separate data by type
+    const categories = processedData.reduce((acc, item) => {
+      const baseModality = item.modality.split(' ')[0]; // Get base modality without transfer info
+      const type = item.modality?.toLowerCase().includes('transfer from') ? 'transferIn' :
+                  item.modality?.toLowerCase().includes('transfer to') ? 'transferOut' : 'original';
+  
+      if (!acc[type]) {
+        acc[type] = {};
+      }
+      if (!acc[type][baseModality]) {
+        acc[type][baseModality] = {
+          name: baseModality,
           value: 0,
           count: 0,
           emissions: 0
         };
       }
-      acc[item.modality].count++;
-      acc[item.modality].emissions += item.emissionsAbated;
-      acc[item.modality].value = acc[item.modality].emissions;
+      
+      acc[type][baseModality].count++;
+      acc[type][baseModality].emissions += item.emissionsAbated;
+      acc[type][baseModality].value = acc[type][baseModality].emissions;
+      return acc;
+    }, {} as Record<string, Record<string, any>>);
+  
+    // Combine modalities for pie chart (original + transfers in - transfers out)
+    const modalityStats = Object.keys(CHART_COLORS.modality).reduce((acc, modality) => {
+      const originalValue = (categories.original?.[modality]?.emissions || 0);
+      const transferInValue = (categories.transferIn?.[modality]?.emissions || 0);
+      const transferOutValue = (categories.transferOut?.[modality]?.emissions || 0);
+      
+      const netValue = originalValue + transferInValue - transferOutValue;
+      
+      if (netValue > 0) {
+        acc[modality] = {
+          name: modality,
+          value: netValue,
+          count: (categories.original?.[modality]?.count || 0) + 
+                 (categories.transferIn?.[modality]?.count || 0),
+          emissions: netValue
+        };
+      }
       return acc;
     }, {} as Record<string, any>);
-
+  
+    // Timeline data with transfer information
     const timelineData = processedData.reduce((acc, item) => {
       const date = item.date.split('T')[0];
       if (!acc[date]) {
         acc[date] = {
           date,
           emissions: 0,
+          transferredIn: 0,
+          transferredOut: 0,
           count: 0
         };
       }
-      acc[date].emissions += item.emissionsAbated;
+  
+      if (item.modality?.toLowerCase().includes('transfer from')) {
+        acc[date].transferredIn += item.emissionsAbated;
+      } else if (item.modality?.toLowerCase().includes('transfer to')) {
+        acc[date].transferredOut += item.emissionsAbated;
+      } else {
+        acc[date].emissions += item.emissionsAbated;
+      }
       acc[date].count++;
       return acc;
     }, {} as Record<string, any>);
-
+  
     return {
       modality: Object.values(modalityStats),
       timeline: Object.values(timelineData)
         .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
         .map((item, index, array) => ({
           ...item,
+          netEmissions: item.emissions + item.transferredIn - item.transferredOut,
           cumulativeEmissions: array
             .slice(0, index + 1)
-            .reduce((sum, curr) => sum + curr.emissions, 0)
+            .reduce((sum, curr) => 
+              sum + curr.emissions + curr.transferredIn - curr.transferredOut, 
+            0)
         }))
     };
   }, [processedData]);
 
-  const stats = useMemo(() => ({
-    totalEmissions: processedData.reduce((sum, item) => sum + item.emissionsAbated, 0),
-    totalInterventions: processedData.length, // This will now only count verified interventions
-    averageEmission: processedData.length 
-      ? processedData.reduce((sum, item) => sum + item.emissionsAbated, 0) / processedData.length 
-      : 0,
-    topGeographies: Object.entries(
-      processedData.reduce((acc, item) => {
-        acc[item.geography] = (acc[item.geography] || 0) + item.emissionsAbated;
-        return acc;
-      }, {} as Record<string, number>)
-    )
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 5)
-  }), [processedData]);
+  const stats = useMemo(() => {
+    // Categorize interventions
+    const categories = processedData.reduce((acc, item) => {
+      const isTransferFrom = item.modality?.toLowerCase().includes('transfer from');
+      const isTransferTo = item.modality?.toLowerCase().includes('transfer to') || 
+                          (item.interventionId?.includes('transfer_') && !isTransferFrom);
+      
+      if (isTransferFrom) {
+        acc.transfersIn.push(item);
+      } else if (isTransferTo) {
+        acc.transfersOut.push(item);
+      } else {
+        acc.original.push(item);
+      }
+      return acc;
+    }, {
+      original: [] as typeof processedData,
+      transfersIn: [] as typeof processedData,
+      transfersOut: [] as typeof processedData
+    });
+  
+    // Calculate total available emissions (original + transfers in - transfers out)
+    const netEmissions = 
+      categories.original.reduce((sum, item) => sum + item.emissionsAbated, 0) +
+      categories.transfersIn.reduce((sum, item) => sum + item.emissionsAbated, 0) -
+      categories.transfersOut.reduce((sum, item) => 
+        // For transfer out, use the difference between original and remaining
+        sum + (item.emissionsAbated - (item.remainingAmount || 0)), 
+      0);
+  
+    return {
+      // Net emissions after all transfers
+      totalEmissions: netEmissions,
+      
+      // Intervention counts
+      totalInterventions: processedData.length,
+      originalInterventions: categories.original.length,
+      transfersInCount: categories.transfersIn.length,
+      transfersOutCount: categories.transfersOut.length,
+      
+      // Emissions by category
+      originalEmissions: categories.original.reduce((sum, item) => sum + item.emissionsAbated, 0),
+      transferredInEmissions: categories.transfersIn.reduce((sum, item) => sum + item.emissionsAbated, 0),
+      transferredOutEmissions: categories.transfersOut.reduce((sum, item) => sum + item.emissionsAbated, 0),
+      
+      // Average emissions (excluding transfers out to avoid double counting)
+      averageEmission: (categories.original.length + categories.transfersIn.length) > 0
+        ? (categories.original.reduce((sum, item) => sum + item.emissionsAbated, 0) +
+           categories.transfersIn.reduce((sum, item) => sum + item.emissionsAbated, 0)) /
+          (categories.original.length + categories.transfersIn.length)
+        : 0,
+      
+      // Geography stats including all interventions
+      topGeographies: Object.entries(
+        processedData.reduce((acc, item) => {
+          acc[item.geography] = (acc[item.geography] || 0) + item.emissionsAbated;
+          return acc;
+        }, {} as Record<string, number>)
+      )
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+    };
+  }, [processedData]);
 
   const handleSort = (key: string) => {
     setSortConfig(current => ({
@@ -260,25 +347,31 @@ const ReportingPage: React.FC = () => {
     value: string | number;
     icon: React.ReactNode;
     trend?: { value: number; positive: boolean };
-  }> = ({ title, value, icon, trend }) => (
-    <div className="bg-white/25 backdrop-blur-md rounded-lg p-6 border border-white/20">
-      <div className="flex justify-between items-start">
-        <div>
-          <h3 className="text-sm font-medium text-[#103D5E]/70">{title}</h3>
-          <p className="mt-2 text-3xl font-bold text-[#103D5E]">{value}</p>
-          {trend && (
-            <p className={`mt-2 text-sm flex items-center gap-1 ${
-              trend.positive ? 'text-green-600' : 'text-red-600'
-            }`}>
-              {trend.positive ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
-              {trend.value}%
-            </p>
-          )}
-        </div>
-        <div className="p-3 bg-white/30 rounded-lg">
+    subtitle?: string;
+  }> = ({ title, value, icon, trend, subtitle }) => (
+    <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)] transition-all duration-300 hover:translate-y-[-4px] hover:shadow-xl group">
+      <div className="flex items-start justify-between">
+        <h3 className="text-[#103D5E]/60 text-sm font-medium">{title}</h3>
+        <div className="p-2 bg-white/30 rounded-lg group-hover:bg-white/40 transition-colors duration-300">
           {icon}
         </div>
       </div>
+      <div className="mt-4 flex items-end space-x-2">
+        <div className="text-3xl font-bold text-[#103D5E]">{value}</div>
+      </div>
+      {subtitle && (
+        <div className="mt-1 text-sm text-[#103D5E]/60">
+          {subtitle}
+        </div>
+      )}
+      {trend && (
+        <div className={`mt-2 text-sm flex items-center gap-1 ${
+          trend.positive ? 'text-green-600' : 'text-red-600'
+        }`}>
+          {trend.positive ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
+          {trend.value}%
+        </div>
+      )}
     </div>
   );
 
@@ -318,30 +411,45 @@ const ReportingPage: React.FC = () => {
             </div>
 
             {/* Stats Cards */}
+            {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               <StatCard
-                title="Total Emissions Abated"
+                title="Net Emissions Balance"
                 value={`${stats.totalEmissions.toFixed(1)} tCO2e`}
                 icon={<BarChartIcon className="h-6 w-6 text-[#103D5E]" />}
-                trend={{ value: 12.5, positive: true }}
+                trend={{ 
+                  value: ((stats.transferredInEmissions - stats.transferredOutEmissions) / stats.originalEmissions * 100).toFixed(1),
+                  positive: stats.transferredInEmissions >= stats.transferredOutEmissions 
+                }}
               />
               <StatCard
-                title="Verified Interventions"
-                value={stats.totalInterventions}
+                title="Original Interventions"
+                value={`${stats.originalEmissions.toFixed(1)} tCO2e`}
+                subtitle={`${stats.originalInterventions} projects`}
                 icon={<PieChartIcon className="h-6 w-6 text-[#103D5E]" />}
-                trend={{ value: 8.3, positive: true }}
               />
               <StatCard
-                title="Average Reduction"
-                value={`${stats.averageEmission.toFixed(1)} tCO2e`}
-                icon={<BarChartIcon className="h-6 w-6 text-[#103D5E]" />}
+                title="Transfers In"
+                value={`${stats.transferredInEmissions.toFixed(1)} tCO2e`}
+                subtitle={`${stats.transfersInCount} received`}
+                icon={<ArrowDownRight className="h-6 w-6 text-[#103D5E]" />}
+                trend={{ 
+                  value: (stats.transferredInEmissions / stats.originalEmissions * 100).toFixed(1),
+                  positive: true 
+                }}
               />
               <StatCard
-                title="Active Modalities"
-                value={chartData.modality.length}
-                icon={<Ship className="h-6 w-6 text-[#103D5E]" />}
+                title="Transfers Out"
+                value={`${stats.transferredOutEmissions.toFixed(1)} tCO2e`}
+                subtitle={`${stats.transfersOutCount} sent`}
+                icon={<ArrowUpRight className="h-6 w-6 text-[#103D5E]" />}
+                trend={{ 
+                  value: (stats.transferredOutEmissions / stats.originalEmissions * 100).toFixed(1),
+                  positive: false 
+                }}
               />
             </div>
+
             {/* Charts Section */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Modality Distribution */}
@@ -506,10 +614,10 @@ const ReportingPage: React.FC = () => {
                         <td className="px-6 py-4 whitespace-nowrap">
                           <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
                             row.status?.toLowerCase() === 'verified'
-                            ? 'bg-green-100 text-green-800'
-                            : row.status?.toLowerCase().includes('pending') || row.status?.toLowerCase() === 'pending_review'
-                              ? 'bg-yellow-100 text-yellow-800'
-                              : 'bg-gray-100 text-gray-800'
+                              ? 'bg-green-100 text-green-800'
+                              : row.status?.toLowerCase().includes('pending') || row.status?.toLowerCase() === 'pending_review'
+                                ? 'bg-yellow-100 text-yellow-800'
+                                : 'bg-gray-100 text-gray-800'
                           }`}>
                             {row.status || 'Unknown'}
                           </span>

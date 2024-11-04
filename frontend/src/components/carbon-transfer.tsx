@@ -27,8 +27,10 @@ interface Transfer {
   id: string;
   sourceIntervention: {
     id: string;
+    interventionId: string;  
     modality: string;
     scope3EmissionsAbated: string;
+    remainingAmount?: string;  
   };
   sourceDomain: {
     name: string;
@@ -38,7 +40,7 @@ interface Transfer {
     name: string;
     companyName: string;
   };
-  amount: string;
+  amount: string | number;  // Add number type since we parse it
   status: 'pending' | 'completed' | 'cancelled';
   createdAt: string;
   completedAt?: string;
@@ -81,11 +83,15 @@ const TransferActions: React.FC<{
   const { user } = useAuth();
   
   // Debug logging
-  console.log('Transfer:', transfer);
-  console.log('User domain:', user?.domain);
+  console.log('Transfer action check:', {
+    transferTargetDomain: transfer.targetDomain.name,
+    userDomain: user?.domain,
+    status: transfer.status
+  });
   
-  // Check if user is the target domain and transfer is pending
-  const isTargetDomain = transfer.targetDomain.name.replace('@', '') === user?.domain?.replace('@', '');
+  // Clean both domains for comparison (remove @ if it exists)
+  const cleanDomainName = (domain: string) => domain.replace('@', '');
+  const isTargetDomain = cleanDomainName(transfer.targetDomain.name) === cleanDomainName(user?.domain || '');
   const isPending = transfer.status === 'pending';
 
   if (!isPending || !isTargetDomain) {
@@ -205,75 +211,41 @@ const CarbonTransfer: React.FC = () => {
 
   const handleApproveTransfer = async (transferId: string) => {
     try {
-      const response = await fetch(`http://localhost:3001/api/transfers/${transferId}/approve`, {
+      console.log('Starting transfer approval for ID:', transferId);
+      
+      const approvalResponse = await fetch(`http://localhost:3001/api/transfers/${transferId}/approve`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
       });
       
-      if (response.ok) {
-        const updatedTransfer = await response.json();
-        
-        // Update the transfers list with the new status
+      if (!approvalResponse.ok) {
+        const errorData = await approvalResponse.json();
+        throw new Error(errorData.error || 'Failed to approve transfer');
+      }
+  
+      const updatedTransfer = await approvalResponse.json();
+      console.log('Received updated transfer:', updatedTransfer);  // Debug log
+      
+      // Update transfers list, safely handle the response
+      if (updatedTransfer && updatedTransfer.id) {
         setTransfers(prev => 
           prev.map(t => t.id === updatedTransfer.id ? updatedTransfer : t)
         );
-  
-        // Update intervention data to reflect the transfer
-        const response = await fetch(`http://localhost:3001/api/intervention-requests/${updatedTransfer.sourceIntervention.id}`, {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
-          body: JSON.stringify({
-            emissionsAbated: (
-              parseFloat(updatedTransfer.sourceIntervention.scope3EmissionsAbated) - 
-              parseFloat(updatedTransfer.amount)
-            ).toString()
-          })
-        });
-  
-        if (!response.ok) {
-          throw new Error('Failed to update intervention credits');
-        }
-  
-        // Create a new intervention for the target company
-        const createResponse = await fetch('http://localhost:3001/api/intervention-requests', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
-          },
-          body: JSON.stringify({
-            modality: `Transfer from ${updatedTransfer.sourceDomain.name}`,
-            emissionsAbated: updatedTransfer.amount,
-            date: new Date().toLocaleDateString(),
-            status: 'verified',
-            clientName: updatedTransfer.targetDomain.companyName,
-            additionality: true,
-            causality: true,
-            geography: updatedTransfer.sourceIntervention.geography || 'Transfer',
-            lowCarbonFuel: updatedTransfer.sourceIntervention.lowCarbonFuel || 'N/A',
-            feedstock: updatedTransfer.sourceIntervention.feedstock || 'N/A',
-            certificationScheme: updatedTransfer.sourceIntervention.certificationScheme || 'N/A',
-            ghgEmissionSaving: updatedTransfer.sourceIntervention.ghgEmissionSaving || 'N/A',
-            vintage: new Date().getFullYear(),
-            thirdPartyVerification: 'Transfer Verified',
-            transferId: transferId
-          })
-        });
-  
-        if (!createResponse.ok) {
-          throw new Error('Failed to create intervention for target company');
-        }
-  
-        // Refresh intervention data in context
-        await refreshInterventions();
       }
+  
+      // Force refresh interventions
+      await refreshInterventions();
+      
+      // Add a small delay to ensure all updates are processed
+      setTimeout(() => {
+        refreshInterventions();
+      }, 1000);
+  
     } catch (error) {
       console.error('Error approving transfer:', error);
+      throw error;
     }
   };
 
@@ -401,7 +373,7 @@ const CarbonTransfer: React.FC = () => {
                         <td className="px-4 py-3 text-[#103D5E]">
                           {transfer.sourceIntervention.modality}
                           <div className="text-sm text-[#103D5E]/60">
-                            ID: {transfer.sourceIntervention.id}
+                            ID: {transfer.sourceIntervention.interventionId}
                           </div>
                         </td>
                         <td className="px-4 py-3 text-[#103D5E]">

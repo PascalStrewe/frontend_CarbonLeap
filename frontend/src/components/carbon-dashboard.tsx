@@ -1,6 +1,6 @@
 // C:/Users/PascalStrewe/Downloads/frontend_CarbonLeap/src/components/carbon-dashboard.tsx
 
-import React from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   BarChart3, 
@@ -15,7 +15,15 @@ import {
   ArrowUpRight,
   ArrowDownRight
 } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer 
+} from 'recharts';
 import { useAuth } from '../context/AuthContext';
 import { useInterventions } from '../context/InterventionContext';
 import Sidebar from './Sidebar';
@@ -30,6 +38,13 @@ interface Intervention {
   modality: string;
   geography: string;
   status?: string;
+  remainingAmount?: number;
+  activeClaims?: number;
+  claims?: Array<{
+    status: string;
+    amount: number;
+  }>;
+  totalAmount?: number;
 }
 
 interface MonthlyData {
@@ -57,19 +72,57 @@ interface ActivityItemProps {
 }
 
 const Dashboard: React.FC = () => {
-  const { interventionData } = useInterventions();
+  const { interventionData, refreshInterventions } = useInterventions();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const isAdmin = user?.isAdmin;
+  useEffect(() => {
+    refreshInterventions();
+    const interval = setInterval(refreshInterventions, 5000); // Refresh every 5 seconds
+    return () => clearInterval(interval);
+  }, [refreshInterventions]);
+
+  // Add this useEffect to fetch data when component mounts
+  useEffect(() => {
+    refreshInterventions();
+  }, [refreshInterventions]);
 
   // Filter data for the current user unless admin
-  const filteredInterventionData = isAdmin 
-    ? interventionData 
-    : interventionData.filter((intervention: Intervention) => 
-        intervention.clientName === user?.name
-      );
-
-  console.log('Filtered Intervention Data:', filteredInterventionData);
+  const filteredInterventionData = useMemo(() => {
+    console.log('Raw intervention data before filtering:', 
+      interventionData.map(i => ({
+        id: i.interventionId,
+        clientName: i.clientName,
+        status: i.status,
+        remainingAmount: i.remainingAmount,
+        activeClaims: i.activeClaims,
+        modality: i.modality
+      }))
+    );
+    console.log('Raw intervention data:', interventionData);
+    console.log('Current user:', user);
+  
+    return isAdmin 
+      ? interventionData 
+      : interventionData.filter((intervention: Intervention) => {
+          // First check if the intervention has a valid clientName
+          if (!intervention.clientName) return false;
+          
+          // Handle possible domain in user.name
+          const userName = user?.name?.split('@')[0];
+          const clientName = intervention.clientName.toLowerCase();
+          const searchName = userName?.toLowerCase();
+  
+          // Debug logging
+          console.log('Comparing:', {
+            clientName,
+            searchName,
+            matches: clientName.includes(searchName || '')
+          });
+  
+          return clientName.includes(searchName || '');
+        });
+  }, [isAdmin, interventionData, user?.name]);
 
   const handleLogout = async () => {
     await logout();
@@ -77,23 +130,105 @@ const Dashboard: React.FC = () => {
   };
 
   // Calculate total stats from intervention data
-  const totalEmissions = filteredInterventionData.reduce((sum, intervention) => 
-    sum + intervention.emissionsAbated, 0
+  const totalEmissions = useMemo(() => 
+    filteredInterventionData.reduce((sum, intervention) => {
+      const isTransferFrom = intervention.modality?.toLowerCase().includes('transfer from');
+      const isTransferTo = intervention.modality?.toLowerCase().includes('transfer to') || 
+                          (intervention.interventionId?.includes('transfer_') && !isTransferFrom);
+  
+      // For received transfers
+      if (isTransferFrom) {
+        return sum + (intervention.emissionsAbated || 0);
+      }
+  
+      // For sent transfers (Transfer Out)
+      if (isTransferTo) {
+        // Subtract the emissions that were transferred out
+        return sum - (intervention.emissionsAbated - (intervention.remainingAmount || 0));
+      }
+  
+      // For regular interventions
+      return sum + (intervention.remainingAmount || 0);
+    }, 0), [filteredInterventionData]
   );
-  const totalInterventions = filteredInterventionData.length;
-  const pendingRequests = filteredInterventionData.filter(
+
+  const verifiedRequests = useMemo(() => {
+    console.log('Starting verified requests calculation...');
+    
+    const verifiedList = filteredInterventionData.filter(intervention => {
+      const isVerified = intervention.status?.toLowerCase() === 'verified' || 
+                        intervention.status?.toLowerCase() === 'completed';
+      
+      // First determine the type of intervention
+      const isTransferFrom = intervention.modality?.toLowerCase().includes('transfer from');
+      // Check both modality and ID for transfer out since some might not have the modality set correctly
+      const isTransferTo = intervention.modality?.toLowerCase().includes('transfer to') || 
+                          (intervention.interventionId?.includes('transfer_') && !isTransferFrom);
+      
+      console.log('Checking intervention:', {
+        id: intervention.interventionId,
+        isVerified,
+        type: isTransferFrom ? 'Transfer In' : isTransferTo ? 'Transfer Out' : 'Regular',
+        status: intervention.status,
+        remainingAmount: intervention.remainingAmount,
+        activeClaims: intervention.activeClaims,
+        modality: intervention.modality
+      });
+  
+      // For received transfers (Transfer In)
+      if (isTransferFrom) {
+        return isVerified;
+      }
+      
+      // For sent transfers (Transfer Out)
+      if (isTransferTo) {
+        // Don't count transferred out interventions in verified total
+        console.log('Transfer Out - Not counting:', intervention.interventionId);
+        return false;
+      }
+  
+      // For regular interventions (not transfers)
+      const shouldCount = isVerified && 
+        (intervention.remainingAmount > 0 || intervention.activeClaims > 0);
+      console.log('Regular intervention check:', {
+        id: intervention.interventionId,
+        result: shouldCount,
+        reason: shouldCount ? 
+          'Counted because: Verified and has remaining amount or claims' :
+          'Not counted because: ' + 
+          (!isVerified ? 'Not verified' : 
+           'No remaining amount and no active claims')
+      });
+      return shouldCount;
+    });
+    
+    console.log('Verified requests final calculation:', {
+      total: verifiedList.length,
+      details: verifiedList.map(v => ({
+        id: v.interventionId,
+        type: v.modality?.toLowerCase().includes('transfer from') ? 'Transfer In' :
+              v.interventionId?.includes('transfer_') ? 'Transfer Out' :
+              'Regular',
+        status: v.status,
+        remainingAmount: v.remainingAmount,
+        activeClaims: v.activeClaims
+      }))
+    });
+    
+    return verifiedList.length;
+  }, [filteredInterventionData]);
+
+const totalInterventions = filteredInterventionData.length;
+
+const pendingRequests = useMemo(() => 
+  filteredInterventionData.filter(
     intervention => {
       console.log('Checking intervention status:', intervention.status);
       return intervention.status?.toLowerCase() === 'pending' || 
              intervention.status?.toLowerCase() === 'pending_review';
     }
-  ).length;
-
-  const verifiedRequests = filteredInterventionData.filter(
-    intervention => 
-      intervention.status?.toLowerCase() === 'verified' || 
-      intervention.status?.toLowerCase() === 'completed'
-  ).length;
+  ).length, [filteredInterventionData]
+);
 
   console.log('Pending Requests Count:', pendingRequests);
 

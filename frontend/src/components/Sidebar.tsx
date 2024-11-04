@@ -61,6 +61,11 @@ export default function Sidebar({ className }: SidebarProps) {
       href: '/analytics',
     },
     {
+      label: 'Reports',
+      icon: FileText,
+      href: '/reports',
+    },
+    {
       label: 'Chat with Data',
       icon: MessageSquare,
       href: '/chat-with-data',

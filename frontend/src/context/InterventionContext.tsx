@@ -1,5 +1,3 @@
-// src/context/InterventionContext.tsx
-
 import React, {
   createContext,
   useContext,
@@ -39,6 +37,7 @@ export interface InterventionData {
   standards?: string;
   otherCertificationScheme?: string;
   vesselType?: string;
+  remainingAmount?: number;
 }
 
 // Define the context type
@@ -46,7 +45,7 @@ interface InterventionContextType {
   interventionData: InterventionData[];
   addInterventions: (newData: InterventionData[]) => void;
   clearInterventions: () => void;
-  refreshInterventions: () => void;
+  refreshInterventions: () => Promise<void>;
   error: string | null;
   isLoading: boolean;
 }
@@ -71,11 +70,10 @@ export const useInterventions = (): InterventionContextType => {
 export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const [interventionData, setInterventionData] = useState<InterventionData[]>(
-    []
-  );
+  const [interventionData, setInterventionData] = useState<InterventionData[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [authToken, setAuthToken] = useState<string | null>(null);
 
   // Function to check if the token is expired
   const isTokenExpired = (token: string): boolean => {
@@ -91,46 +89,149 @@ export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  // Function to clear all interventions
+  const clearInterventions = useCallback(() => {
+    console.log('Clearing intervention data');
+    setInterventionData([]);
+    localStorage.removeItem('interventionData');
+  }, []);
+
   // Memoized function to fetch interventions
   const fetchInterventions = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      console.log('No token available, skipping fetch');
+      return;
+    }
+
+    if (isTokenExpired(token)) {
+      console.log('Token expired, clearing data');
+      localStorage.removeItem('token');
+      setError('Session expired. Please log in again.');
+      clearInterventions();
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
+    
     try {
-      const token = localStorage.getItem('token');
-      if (!token || isTokenExpired(token)) {
-        localStorage.removeItem('token'); // Remove invalid or expired token
-        throw new Error('Session expired. Please log in again.');
-      }
-
       console.log('Fetching interventions...');
-      const response = await axios.get('/api/intervention-requests', {
+      const response = await axios.get('http://localhost:3001/api/intervention-requests', {
         headers: {
           Authorization: `Bearer ${token}`,
         },
       });
 
-      // Assuming the backend returns an array of interventions
-      const data: InterventionData[] = response.data;
+      const rawData = response.data;
+      console.log('Raw response data:', rawData);
 
-      console.log('Fetched interventions:', data);
-      setInterventionData(data);
-      localStorage.setItem('interventionData', JSON.stringify(data));
+      const processedData: InterventionData[] = rawData.map((intervention: any) => {
+        console.log('Processing intervention:', {
+          id: intervention.interventionId,
+          raw: {
+            remainingAmount: intervention.remainingAmount,
+            emissionsAbated: intervention.emissionsAbated,
+            claims: intervention.claims,
+            status: intervention.status,
+            modality: intervention.modality
+          }
+        });
+        // Parse amounts
+        const totalAmount = parseFloat(intervention.totalAmount?.toString() || intervention.emissionsAbated.toString());
+        const remainingAmount = typeof intervention.remainingAmount === 'number' ? 
+          parseFloat(intervention.remainingAmount.toString()) : 
+          parseFloat(intervention.emissionsAbated.toString());
+        const emissionsAmount = parseFloat(intervention.emissionsAbated.toString());
+      
+        // Calculate total active claims amount
+        const activeClaims = (intervention.claims || []).reduce((sum: number, claim: any) => {
+          if (claim.status === 'active') {
+            return sum + parseFloat(claim.amount.toString());
+          }
+          return sum;
+        }, 0);
+      
+        // Determine if this is a transfer and its direction
+        const isTransferFrom = intervention.modality?.toLowerCase().includes('transfer from');
+        const isTransferTo = intervention.modality?.toLowerCase().includes('transfer to');
+        
+        // Get user's domain from localStorage token
+        const token = localStorage.getItem('token');
+        let userDomain = '';
+        if (token) {
+          try {
+            const payload = JSON.parse(atob(token.split('.')[1]));
+            userDomain = payload.domain;
+          } catch (e) {
+            console.error('Error parsing token:', e);
+          }
+        }
+      
+        // Determine the correct status based on transfer direction, ownership, and claims
+        let status = intervention.status;
+        let effectiveAmount = remainingAmount;
+        
+        if (isTransferFrom && intervention.clientName?.includes(userDomain)) {
+          // This is a received transfer for current user
+          status = intervention.status?.toLowerCase() === 'completed' ? 'verified' : intervention.status;
+          effectiveAmount = emissionsAmount;
+        } else if (isTransferTo && intervention.clientName?.includes(userDomain)) {
+          // This is a sent transfer from current user
+          // Only mark as transferred if:
+          // 1. The entire amount was transferred (remainingAmount === 0)
+          // 2. AND there are no active claims
+          status = remainingAmount === 0 && activeClaims === 0 ? 'transferred' : intervention.status;
+          effectiveAmount = remainingAmount;
+        } else if (!isTransferFrom && !isTransferTo) {
+          // Original intervention
+          status = remainingAmount === 0 && activeClaims === 0 ? 'transferred' : intervention.status;
+          effectiveAmount = remainingAmount;
+        }
+      
+        return {
+          ...intervention,
+          totalAmount,
+          remainingAmount: effectiveAmount,
+          emissionsAbated: emissionsAmount,
+          activeClaims,
+          status,
+          additionality: intervention.additionality === true || intervention.additionality === 'true',
+          causality: intervention.causality === true || intervention.causality === 'true',
+          isTransferReceived: isTransferFrom,
+          isTransferSent: isTransferTo
+        };
+
+        console.log('Processed intervention result:', {
+          id: intervention.interventionId,
+          processed: {
+            remainingAmount: effectiveAmount,
+            emissionsAbated: emissionsAmount,
+            activeClaims,
+            status,
+            isTransferFrom,
+            isTransferTo
+          }
+        });
+      });
+
+      console.log('Processed intervention data:', processedData);
+      setInterventionData(processedData);
+
     } catch (err: any) {
       console.error('Error fetching interventions:', err);
       setError(
         err.response?.data?.message ||
-          err.message ||
-          'Failed to fetch intervention data'
+        err.message ||
+        'Failed to fetch intervention data'
       );
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        clearInterventions();
+      }
     } finally {
       setIsLoading(false);
     }
-  }, []);
-
-  // Memoized function to refresh interventions
-  const refreshInterventions = useCallback(() => {
-    fetchInterventions();
-  }, [fetchInterventions]);
+  }, [clearInterventions]);
 
   // Function to add new interventions without duplicates
   const addInterventions = useCallback((newData: InterventionData[]) => {
@@ -140,26 +241,54 @@ export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
         (item) => !existingIds.has(item.interventionId)
       );
       const updatedData = [...prevData, ...filteredNewData];
-      localStorage.setItem('interventionData', JSON.stringify(updatedData));
       return updatedData;
     });
   }, []);
 
-  // Function to clear all interventions
-  const clearInterventions = useCallback(() => {
-    setInterventionData([]);
-    localStorage.removeItem('interventionData');
-  }, []);
-
-  // Initial data fetch and setting up the refresh interval
+  // Check for token changes
   useEffect(() => {
-    fetchInterventions();
+    const token = localStorage.getItem('token');
+    console.log('Token changed:', token ? 'Present' : 'Not present');
+    setAuthToken(token);
 
-    const interval = setInterval(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'token') {
+        console.log('Token storage changed:', e.newValue ? 'Present' : 'Not present');
+        setAuthToken(e.newValue);
+        if (e.newValue) {
+          fetchInterventions();
+        } else {
+          clearInterventions();
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, [fetchInterventions, clearInterventions]);
+
+  // Set up refresh interval when authenticated
+  useEffect(() => {
+    if (authToken) {
+      console.log('Setting up intervention refresh interval');
       fetchInterventions();
-    }, 30000); // Refresh every 30 seconds
 
-    return () => clearInterval(interval);
+      const interval = setInterval(() => {
+        fetchInterventions();
+      }, 30000);
+
+      return () => {
+        console.log('Clearing intervention refresh interval');
+        clearInterval(interval);
+      };
+    } else {
+      clearInterventions();
+    }
+  }, [authToken, fetchInterventions, clearInterventions]);
+
+  // Expose refreshInterventions as a Promise
+  const refreshInterventions = useCallback(async () => {
+    await fetchInterventions();
   }, [fetchInterventions]);
 
   // Memoize the context value to prevent unnecessary re-renders
@@ -188,3 +317,5 @@ export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
     </InterventionContext.Provider>
   );
 };
+
+export default InterventionProvider;

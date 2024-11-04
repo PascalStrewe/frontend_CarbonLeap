@@ -30,6 +30,15 @@ export default function ChatWithData() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollToBottom = () => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  useEffect(() => {
+    refreshInterventions();
+  }, [refreshInterventions]);
 
   useEffect(() => {
     // Only scroll to bottom if there are messages

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Shield, 
   FileCheck, 
@@ -10,6 +10,7 @@ import {
   Eye
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useInterventions } from '../context/InterventionContext';
 import Sidebar from './Sidebar';
 import Navigation from './Navigation';
 
@@ -72,7 +73,11 @@ const MetricCard: React.FC<MetricCardProps> = ({ icon, title, value, unit }) => 
 );
 
 const CarbonClaims = () => {
+  // Context hooks
   const { user } = useAuth();
+  const { interventionData, refreshInterventions } = useInterventions();
+
+  // State declarations
   const [claims, setClaims] = useState<Claim[]>([]);
   const [interventions, setInterventions] = useState<Intervention[]>([]);
   const [isClaimFormOpen, setIsClaimFormOpen] = useState(false);
@@ -85,6 +90,15 @@ const CarbonClaims = () => {
   const [generatingPDF, setGeneratingPDF] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // Auto-refresh effect
+  useEffect(() => {
+    if (refreshInterventions) {
+      refreshInterventions();
+      const interval = setInterval(refreshInterventions, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [refreshInterventions]);
 
   const fetchClaims = useCallback(async () => {
     if (!user?.domain) return;
@@ -121,59 +135,46 @@ const CarbonClaims = () => {
       setLoading(false);
     }
   }, [user?.domain]);
-  
-  const fetchInterventions = useCallback(async () => {
-    if (!user?.domain) return;
-    
-    try {
-      const response = await fetch('/api/intervention-requests', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch interventions');
-      }
-      
-      const data = await response.json();
-      
-      const transformedInterventions = data
-      .filter((intervention: any) => intervention.emissionsAbated > 0)
-      .map((intervention: any): Intervention => ({
-        id: intervention.id,
-        interventionId: intervention.interventionId,
-        clientName: intervention.clientName || 'Unknown Client',
-        emissionsAbated: parseFloat(intervention.emissionsAbated) || 0,
-        date: typeof intervention.date === 'string' ? intervention.date : new Date(intervention.date).toLocaleDateString(),
-        modality: intervention.modality || 'Unknown',
-        geography: intervention.geography || 'Unknown',
-        additionality: intervention.additionality ? 'Yes' : 'No',
-        causality: intervention.causality ? 'Yes' : 'No',
-        status: intervention.status ? intervention.status.toLowerCase().trim() : 'unknown'
-      }));
-    
-    console.log('Transformed interventions:', transformedInterventions); // Debug line
-  
-      setInterventions(transformedInterventions);
-    } catch (error) {
-      console.error('Error fetching interventions:', error);
-      setError(error instanceof Error ? error.message : 'Failed to fetch interventions');
+
+  // Transform and set interventions
+  useEffect(() => {
+    if (interventionData && interventionData.length > 0) {
+      const transformed = interventionData
+        .filter((intervention: any) => intervention.emissionsAbated > 0)
+        .map((intervention: any): Intervention => ({
+          id: intervention.id,
+          interventionId: intervention.interventionId,
+          clientName: intervention.clientName || 'Unknown Client',
+          emissionsAbated: parseFloat(intervention.emissionsAbated) || 0,
+          date: typeof intervention.date === 'string' 
+            ? intervention.date 
+            : new Date(intervention.date).toLocaleDateString(),
+          modality: intervention.modality || 'Unknown',
+          geography: intervention.geography || 'Unknown',
+          additionality: intervention.additionality ? 'Yes' : 'No',
+          causality: intervention.causality ? 'Yes' : 'No',
+          status: intervention.status ? intervention.status.toLowerCase().trim() : 'unknown'
+        }));
+      setInterventions(transformed);
     }
-  }, [user?.domain]);
+  }, [interventionData]);
 
   useEffect(() => {
     if (user?.domain) {
       fetchClaims();
-      fetchInterventions();
     }
-  }, [user?.domain, refreshTrigger, fetchClaims, fetchInterventions]);
+  }, [user?.domain, refreshTrigger, fetchClaims]);
 
   const calculateAvailableAmount = useCallback((interventionId: string): number => {
     const intervention = interventions.find(i => i.interventionId === interventionId);
     if (!intervention) return 0;
-
+  
+    // Don't allow claims on outgoing transfers
+    if (intervention.modality?.toLowerCase().includes('transfer to')) {
+      return 0;
+    }
+  
+    // For incoming transfers or original interventions
     const existingClaims = claims.filter(
       claim => claim.intervention.interventionId === interventionId && claim.status === 'active'
     );
@@ -182,16 +183,24 @@ const CarbonClaims = () => {
       (sum, claim) => sum + claim.amount,
       0
     );
-
+  
     return intervention.emissionsAbated - totalClaimed;
   }, [claims, interventions]);
 
-  const availableInterventions = interventions.filter(
-    intervention => {
-      console.log('Intervention:', intervention.interventionId, 'Status:', intervention.status); // Debug line
-      return calculateAvailableAmount(intervention.interventionId) > 0 &&
-        intervention.status.toLowerCase().trim() === 'verified';
-    }
+  const availableInterventions = useMemo(() => 
+    interventions.filter(intervention => {
+      // Must be verified
+      const isVerified = intervention.status.toLowerCase().trim() === 'verified';
+      
+      // Must have available amount
+      const hasAvailable = calculateAvailableAmount(intervention.interventionId) > 0;
+      
+      // Must not be an outgoing transfer
+      const isNotOutgoingTransfer = !intervention.modality?.toLowerCase().includes('transfer to');
+      
+      return isVerified && hasAvailable && isNotOutgoingTransfer;
+    }),
+    [interventions, calculateAvailableAmount]
   );
 
   const handlePreviewStatement = async (claim: Claim) => {
@@ -266,6 +275,12 @@ const CarbonClaims = () => {
       setSelectedIntervention('');
       setClaimAmount('');
       setRefreshTrigger(prev => prev + 1);
+
+      // Refresh data after successful claim
+      if (refreshInterventions) {
+        refreshInterventions();
+        setTimeout(refreshInterventions, 1000); // Additional refresh after a delay
+      }
     } catch (error) {
       console.error('Error creating claim:', error);
       setError(error instanceof Error ? error.message : 'Failed to create claim');
@@ -288,11 +303,6 @@ const CarbonClaims = () => {
   
     try {
       setError(null);
-      // Log the complete URL and claim data for debugging
-      console.log('Claim data:', claim);
-      console.log('Statement URL:', claim.statement.pdfUrl);
-      console.log('Full URL:', window.location.origin + claim.statement.pdfUrl);
-      
       const response = await fetch(claim.statement.pdfUrl, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -302,10 +312,6 @@ const CarbonClaims = () => {
         }
       });
   
-      // Log response details for debugging
-      console.log('Response status:', response.status);
-      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
-  
       if (!response.ok) {
         console.error('Server response not OK:', response.status, response.statusText);
         const errorText = await response.text();
@@ -314,15 +320,7 @@ const CarbonClaims = () => {
       }
   
       const blob = await response.blob();
-      console.log('Blob details:', {
-        type: blob.type,
-        size: blob.size
-      });
-  
-      // Create filename
       const filename = `claim-statement-${claim.id}.pdf`;
-  
-      // Create download URL and trigger download
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.style.display = 'none';
@@ -332,7 +330,6 @@ const CarbonClaims = () => {
       a.click();
       document.body.removeChild(a);
       
-      // Cleanup
       setTimeout(() => URL.revokeObjectURL(url), 100);
   
     } catch (error) {
@@ -341,9 +338,12 @@ const CarbonClaims = () => {
     }
   };
 
-  const filteredClaims = claims.filter(claim => 
-    claim.intervention.modality.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    claim.intervention.geography.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredClaims = useMemo(() => 
+    claims.filter(claim => 
+      claim.intervention.modality.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      claim.intervention.geography.toLowerCase().includes(searchTerm.toLowerCase())
+    ),
+    [claims, searchTerm]
   );
 
   return (
@@ -419,7 +419,6 @@ const CarbonClaims = () => {
               <div className="relative">
                 <Search className="h-5 w-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-[#103D5E]/60" />
                 <input
-                  type="text"
                   placeholder="Search claims..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}

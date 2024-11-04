@@ -2314,7 +2314,6 @@ app.get('/api/transfers', authenticateToken, async (req: AuthRequest, res: Respo
         createdAt: 'desc'
       }
     });
-
     return res.json(transfers);
   } catch (error) {
     next(error);
@@ -2323,30 +2322,113 @@ app.get('/api/transfers', authenticateToken, async (req: AuthRequest, res: Respo
 
 app.post('/api/transfers/:id/approve', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { id } = req.params;
-
-    const transfer = await prisma.transfer.findUnique({
-      where: { id },
-      include: {
-        sourceDomain: true,
-        targetDomain: true
-      }
+    console.log('Transfer approval initiated:', {
+      transferId: req.params.id,
+      approvingUserId: req.user?.id,
+      approvingUserDomain: req.user?.domainId
     });
 
-    if (!transfer) {
-      return res.status(404).json({ error: 'Transfer not found' });
-    }
-
-    // Only target domain can approve
-    if (transfer.targetDomainId !== req.user!.domainId) {
-      return res.status(403).json({ error: 'Not authorized to approve this transfer' });
-    }
-
-    if (transfer.status !== 'pending') {
-      return res.status(400).json({ error: 'Transfer is not pending' });
-    }
+    const { id } = req.params;
 
     const updatedTransfer = await prisma.$transaction(async (tx) => {
+      // Get complete transfer data within transaction
+      const transfer = await tx.transfer.findUnique({
+        where: { id },
+        include: {
+          sourceIntervention: true,
+          sourceDomain: true,
+          targetDomain: true,
+          createdBy: true
+        }
+      });
+
+      if (!transfer) {
+        throw new Error('Transfer not found');
+      }
+
+      // Validate approver's domain
+      if (transfer.targetDomainId !== req.user!.domainId) {
+        throw new Error('Not authorized to approve this transfer');
+      }
+
+      // Check transfer status
+      if (transfer.status !== 'pending') {
+        throw new Error('Transfer is not pending');
+      }
+
+      // Verify source intervention still has sufficient amount
+      if (transfer.sourceIntervention.remainingAmount < transfer.amount) {
+        throw new Error('Insufficient remaining amount in source intervention');
+      }
+
+      // Update source intervention's remaining amount
+      const updatedSourceIntervention = await tx.interventionRequest.update({
+        where: { id: transfer.sourceIntervention.id },
+        data: {
+          remainingAmount: {
+            decrement: transfer.amount
+          }
+        }
+      });
+
+      console.log('Updated source intervention:', {
+        id: updatedSourceIntervention.id,
+        newRemainingAmount: updatedSourceIntervention.remainingAmount
+      });
+
+      // Create new intervention for target domain with all source data
+      const newIntervention = await tx.interventionRequest.create({
+        data: {
+          userId: req.user!.id,
+          interventionId: `${transfer.sourceIntervention.interventionId}_transfer_${transfer.id}`,
+          clientName: transfer.sourceIntervention.clientName,
+          emissionsAbated: parseFloat(transfer.amount.toString()),
+          date: transfer.sourceIntervention.date,
+          modality: transfer.sourceIntervention.modality,
+          geography: transfer.sourceIntervention.geography,
+          status: 'verified',
+          additionality: transfer.sourceIntervention.additionality,
+          causality: transfer.sourceIntervention.causality,
+          totalAmount: parseFloat(transfer.amount.toString()),
+          remainingAmount: parseFloat(transfer.amount.toString()),
+          
+          // Copy all additional fields from source
+          deliveryTicketNumber: transfer.sourceIntervention.deliveryTicketNumber,
+          materialName: transfer.sourceIntervention.materialName,
+          materialId: transfer.sourceIntervention.materialId,
+          vendorName: transfer.sourceIntervention.vendorName,
+          quantity: transfer.sourceIntervention.quantity,
+          unit: transfer.sourceIntervention.unit,
+          amount: transfer.sourceIntervention.amount,
+          materialSustainabilityStatus: transfer.sourceIntervention.materialSustainabilityStatus,
+          interventionType: transfer.sourceIntervention.interventionType,
+          lowCarbonFuel: transfer.sourceIntervention.lowCarbonFuel,
+          baselineFuelProduct: transfer.sourceIntervention.baselineFuelProduct,
+          typeOfVehicle: transfer.sourceIntervention.typeOfVehicle,
+          feedstock: transfer.sourceIntervention.feedstock,
+          emissionReductionPercentage: transfer.sourceIntervention.emissionReductionPercentage,
+          intensityOfBaseline: transfer.sourceIntervention.intensityOfBaseline,
+          intensityLowCarbonFuel: transfer.sourceIntervention.intensityLowCarbonFuel,
+          certificationScheme: transfer.sourceIntervention.certificationScheme,
+          scope: transfer.sourceIntervention.scope,
+          thirdPartyVerifier: transfer.sourceIntervention.thirdPartyVerifier,
+          standards: transfer.sourceIntervention.standards,
+          vesselType: transfer.sourceIntervention.vesselType,
+          lowCarbonFuelLiters: transfer.sourceIntervention.lowCarbonFuelLiters,
+          lowCarbonFuelMT: transfer.sourceIntervention.lowCarbonFuelMT,
+          scope3EmissionsAbated: transfer.sourceIntervention.scope3EmissionsAbated,
+          ghgEmissionSaving: transfer.sourceIntervention.ghgEmissionSaving,
+          vintage: transfer.sourceIntervention.vintage,
+          thirdPartyVerification: transfer.sourceIntervention.thirdPartyVerification,
+          otherCertificationScheme: transfer.sourceIntervention.otherCertificationScheme
+        }
+      });
+
+      console.log('Created new intervention:', {
+        id: newIntervention.id,
+        amount: newIntervention.emissionsAbated
+      });
+
       // Update transfer status
       const updated = await tx.transfer.update({
         where: { id },
@@ -2361,25 +2443,66 @@ app.post('/api/transfers/:id/approve', authenticateToken, async (req: AuthReques
         }
       });
 
-      // Create notification for source domain
-      await tx.notification.create({
-        data: {
-          type: 'TRANSFER_APPROVED',
-          message: `Transfer of ${transfer.amount} tCO2e has been approved`,
-          domainId: transfer.sourceDomainId,
-          metadata: {
-            transferId: transfer.id,
-            amount: transfer.amount
+      // Create notifications for both parties
+      await tx.notification.createMany({
+        data: [
+          {
+            type: 'TRANSFER_COMPLETED',
+            message: `Transfer of ${transfer.amount} tCO2e has been completed`,
+            domainId: transfer.sourceDomainId,
+            metadata: {
+              transferId: transfer.id,
+              sourceInterventionId: transfer.sourceInterventionId,
+              newInterventionId: newIntervention.id,
+              amount: transfer.amount
+            }
+          },
+          {
+            type: 'TRANSFER_COMPLETED',
+            message: `Received transfer of ${transfer.amount} tCO2e`,
+            domainId: transfer.targetDomainId,
+            metadata: {
+              transferId: transfer.id,
+              sourceInterventionId: transfer.sourceInterventionId,
+              newInterventionId: newIntervention.id,
+              amount: transfer.amount
+            }
           }
-        }
+        ]
       });
 
-      return updated;
+      return {
+        ...updated,
+        newInterventionId: newIntervention.id
+      };
     });
 
-    return res.json(updatedTransfer);
+    console.log('Transfer approved successfully:', {
+      transferId: id,
+      newInterventionId: updatedTransfer.newInterventionId
+    });
+
+    res.json(updatedTransfer);
+
   } catch (error) {
-    next(error);
+    console.error('Transfer approval error:', error);
+    
+    // Handle specific error types
+    if (error instanceof Error) {
+      const statusCode = 
+        error.message === 'Transfer not found' ? 404 :
+        error.message === 'Not authorized to approve this transfer' ? 403 :
+        error.message === 'Transfer is not pending' ? 400 :
+        error.message === 'Insufficient remaining amount in source intervention' ? 400 :
+        500;
+
+      res.status(statusCode).json({
+        error: error.message,
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      });
+    } else {
+      res.status(500).json({ error: 'An unexpected error occurred' });
+    }
   }
 });
 
