@@ -98,8 +98,9 @@ model InterventionRequest {
   
   // Relations
   user                   User            @relation(fields: [userId], references: [id])
-  transfersOut           Transfer[]      @relation("SourceIntervention")
-  claims                 CarbonClaim[]   // Add this relation
+  transfersAsSource      Transfer[]      @relation("SourceIntervention")
+  transfersAsTarget      Transfer[]      @relation("TargetIntervention")
+  claims                 CarbonClaim[]
 
   @@index([status])
   @@index([clientName])
@@ -131,20 +132,32 @@ model Transfer {
   id                    String              @id @default(cuid())
   sourceIntervention    InterventionRequest @relation("SourceIntervention", fields: [sourceInterventionId], references: [id])
   sourceInterventionId  String
+  // Removed targetIntervention relation since we keep same intervention
   sourceDomain          Domain              @relation("SourceDomain", fields: [sourceDomainId], references: [id])
   sourceDomainId        Int
   targetDomain          Domain              @relation("TargetDomain", fields: [targetDomainId], references: [id])
   targetDomainId        Int
-  amount                Float               // Changed to Float for numeric CO₂ amounts
-  status                String              @default("pending") // pending, completed, cancelled
+  amount                Float               
+  status                String              @default("pending") 
   createdAt             DateTime            @default(now())
   completedAt           DateTime?
-  notes                 String?             // Removed duplicate 'notes' field
+  notes                 String?
   createdBy             User                @relation("UserCreatedTransfers", fields: [createdById], references: [id])
   createdById           Int
+  
+  // Chain tracking
+  parentTransfer        Transfer?           @relation("TransferChain", fields: [parentTransferId], references: [id])
+  parentTransferId      String?
+  childTransfers        Transfer[]          @relation("TransferChain")
+
+  // Domain level tracking (new fields to track supply chain levels)
+  sourceLevel           Int                 // Add this to track level at time of transfer
+  targetLevel           Int                 // Add this to track level at time of transfer
 
   @@index([status])
-  // Removed @@index([transferCode]) as there is no transferCode field
+  @@index([sourceInterventionId])
+  @@index([sourceDomainId])
+  @@index([targetDomainId])
 }
 
 model ClaimStatement {

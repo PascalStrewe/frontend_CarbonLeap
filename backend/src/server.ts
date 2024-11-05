@@ -150,15 +150,32 @@ async function verifyEmailConfig() {
 }
 
 // CORS middleware
-// Find and replace the CORS configuration in server.ts
-app.use(
-  cors({
-    origin: 'http://localhost:5173',
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
-);
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
+  exposedHeaders: ['Content-Length', 'Content-Type'],
+  optionsSuccessStatus: 200
+}));
+
+// CORS pre-flight
+app.options('*', cors());
+
+// Additional headers middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
+  res.header('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || 'http://localhost:5173');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header(
+    'Access-Control-Allow-Headers',
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization'
+  );
+  res.header(
+    'Access-Control-Allow-Methods',
+    'GET, POST, PUT, DELETE, PATCH, OPTIONS'
+  );
+  next();
+});
 
 // Logging middleware
 app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -1619,10 +1636,10 @@ app.post(
     try {
       const { question } = req.body;
 
-      if (!question) {
+      if (!question || typeof question !== 'string') {
         res.status(400).json({
           success: false,
-          message: 'Question is required',
+          message: 'Valid question is required',
         });
         return;
       }
@@ -1635,9 +1652,24 @@ app.post(
 
       try {
         const answer = await queryService.query(question);
+        if (!answer) {
+          res.json({
+            success: false,
+            message: 'Could not generate an answer',
+          });
+          return;
+        }
+        
         res.json({
           success: true,
           answer,
+        });
+      } catch (error) {
+        console.error('Query service error:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Error processing question',
+          error: error instanceof Error ? error.message : 'Unknown error',
         });
       } finally {
         await queryService.cleanup();
@@ -1648,8 +1680,19 @@ app.post(
   }
 );
 
+app.get('/api/interventions/:id/transfer-history', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const transferService = new SupplyChainTransferService(prisma);
+    const history = await transferService.getTransferHistory(id);
+    res.json(history);
+  } catch (error) {
+    console.error('Error fetching transfer history:', error);
+    res.status(500).json({ error: 'Failed to fetch transfer history' });
+  }
+});
+
 // Preview claim statement endpoint
-// Add this BEFORE the error handling middleware
 app.get('/api/claims/:id/preview-statement', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   console.log('Received preview request for claim:', req.params.id);
   try {
@@ -2166,14 +2209,30 @@ app.patch('/api/partnerships/:id', authenticateToken, async (req: AuthRequest, r
 
 // Transfers endpoints
 app.post('/api/transfers', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
-  const supplyChainService = new SupplyChainTransferService(prisma);
+  console.log('Transfer creation initiated:', {
+    body: req.body,
+    user: {
+      id: req.user?.id,
+      domainId: req.user?.domainId
+    }
+  });
+
   try {
+    const supplyChainService = new SupplyChainTransferService(prisma);
     const { interventionId, targetDomainId, amount, notes } = req.body;
 
-    // Validation
-    if (!interventionId || !targetDomainId || !amount) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    // Input validation with detailed error messages
+    if (!interventionId) {
+      return res.status(400).json({ error: 'Intervention ID is required' });
     }
+    if (!targetDomainId) {
+      return res.status(400).json({ error: 'Target domain ID is required' });
+    }
+    if (!amount || isNaN(parseFloat(amount))) {
+      return res.status(400).json({ error: 'Valid amount is required' });
+    }
+
+    console.log('Finding intervention:', { interventionId, userDomainId: req.user?.domainId });
 
     // Verify intervention exists and belongs to user's domain
     const intervention = await prisma.interventionRequest.findFirst({
@@ -2182,8 +2241,17 @@ app.post('/api/transfers', authenticateToken, async (req: AuthRequest, res: Resp
         user: {
           domainId: req.user!.domainId
         }
+      },
+      include: {
+        user: {
+          select: {
+            domainId: true
+          }
+        }
       }
     });
+
+    console.log('Found intervention:', intervention);
 
     if (!intervention) {
       return res.status(404).json({ error: 'Intervention not found or unauthorized' });
@@ -2195,10 +2263,10 @@ app.post('/api/transfers', authenticateToken, async (req: AuthRequest, res: Resp
         OR: [
           {
             domain1Id: req.user!.domainId,
-            domain2Id: targetDomainId
+            domain2Id: parseInt(targetDomainId)
           },
           {
-            domain1Id: targetDomainId,
+            domain1Id: parseInt(targetDomainId),
             domain2Id: req.user!.domainId
           }
         ],
@@ -2206,54 +2274,86 @@ app.post('/api/transfers', authenticateToken, async (req: AuthRequest, res: Resp
       }
     });
 
+    console.log('Found partnership:', partnership);
+
     if (!partnership) {
       return res.status(403).json({ error: 'No active partnership with target domain' });
     }
 
     // Check if there's enough remaining amount
-    if (intervention.remainingAmount < parseFloat(amount)) {
-      return res.status(400).json({ error: 'Insufficient remaining amount' });
-    }
+    const remainingAmount = parseFloat(intervention.remainingAmount?.toString() || '0');
+    const requestedAmount = parseFloat(amount);
 
-    // Validate supply chain transfer rules
-    const validationResult = await supplyChainService.validateTransfer({
-      sourceDomainId: req.user!.domainId,
-      targetDomainId,
-      interventionId,
-      amount: parseFloat(amount)
-    });
+    console.log('Amount check:', { remainingAmount, requestedAmount });
 
-    if (!validationResult.isValid) {
-      return res.status(400).json({ error: validationResult.error });
+    if (remainingAmount < requestedAmount) {
+      return res.status(400).json({ 
+        error: 'Insufficient remaining amount',
+        available: remainingAmount,
+        requested: requestedAmount 
+      });
     }
 
     // Create transfer in transaction
     const transfer = await prisma.$transaction(async (tx) => {
+      console.log('Starting transfer creation transaction');
+      
       // Create the transfer
       const newTransfer = await tx.transfer.create({
         data: {
-          sourceInterventionId: intervention.id,
-          sourceDomainId: req.user!.domainId,
-          targetDomainId: targetDomainId,
-          amount: parseFloat(amount),
+          sourceIntervention: {
+            connect: {
+              id: intervention.id
+            }
+          },
+          targetIntervention: {
+            connect: {
+              id: intervention.id // Initially connect to same intervention
+            }
+          },
+          sourceDomain: {
+            connect: {
+              id: req.user!.domainId
+            }
+          },
+          targetDomain: {
+            connect: {
+              id: parseInt(targetDomainId)
+            }
+          },
+          amount: requestedAmount,
           status: 'pending',
-          notes,
-          createdById: req.user!.id
+          notes: notes || '',
+          createdBy: {
+            connect: {
+              id: req.user!.id
+            }
+          },
+          // Handle parent transfer if it exists
+          parentTransfer: req.body.parentTransferId ? {
+            connect: {
+              id: req.body.parentTransferId
+            }
+          } : undefined
         },
         include: {
           sourceIntervention: true,
+          targetIntervention: true,
           sourceDomain: true,
           targetDomain: true,
-          createdBy: true
+          createdBy: true,
+          parentTransfer: true,
+          childTransfers: true
         }
       });
+      console.log('Created new transfer:', newTransfer);
 
       // Update intervention's remaining amount
       await tx.interventionRequest.update({
         where: { id: intervention.id },
         data: {
           remainingAmount: {
-            decrement: parseFloat(amount)
+            decrement: requestedAmount
           }
         }
       });
@@ -2263,7 +2363,7 @@ app.post('/api/transfers', authenticateToken, async (req: AuthRequest, res: Resp
         data: {
           type: 'TRANSFER_REQUEST',
           message: `New transfer request for ${amount} tCO2e`,
-          domainId: targetDomainId,
+          domainId: parseInt(targetDomainId),
           metadata: {
             transferId: newTransfer.id,
             amount: amount,
@@ -2275,8 +2375,18 @@ app.post('/api/transfers', authenticateToken, async (req: AuthRequest, res: Resp
       return newTransfer;
     });
 
+    console.log('Transfer created successfully:', transfer);
     return res.status(201).json(transfer);
+
   } catch (error) {
+    console.error('Transfer creation error:', error);
+    if (error instanceof Error) {
+      return res.status(500).json({ 
+        error: 'Transfer creation failed', 
+        message: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      });
+    }
     next(error);
   }
 });
@@ -2322,23 +2432,15 @@ app.get('/api/transfers', authenticateToken, async (req: AuthRequest, res: Respo
 
 app.post('/api/transfers/:id/approve', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
-    console.log('Transfer approval initiated:', {
-      transferId: req.params.id,
-      approvingUserId: req.user?.id,
-      approvingUserDomain: req.user?.domainId
-    });
-
     const { id } = req.params;
 
     const updatedTransfer = await prisma.$transaction(async (tx) => {
-      // Get complete transfer data within transaction
       const transfer = await tx.transfer.findUnique({
         where: { id },
         include: {
           sourceIntervention: true,
           sourceDomain: true,
-          targetDomain: true,
-          createdBy: true
+          targetDomain: true
         }
       });
 
@@ -2351,85 +2453,7 @@ app.post('/api/transfers/:id/approve', authenticateToken, async (req: AuthReques
         throw new Error('Not authorized to approve this transfer');
       }
 
-      // Check transfer status
-      if (transfer.status !== 'pending') {
-        throw new Error('Transfer is not pending');
-      }
-
-      // Verify source intervention still has sufficient amount
-      if (transfer.sourceIntervention.remainingAmount < transfer.amount) {
-        throw new Error('Insufficient remaining amount in source intervention');
-      }
-
-      // Update source intervention's remaining amount
-      const updatedSourceIntervention = await tx.interventionRequest.update({
-        where: { id: transfer.sourceIntervention.id },
-        data: {
-          remainingAmount: {
-            decrement: transfer.amount
-          }
-        }
-      });
-
-      console.log('Updated source intervention:', {
-        id: updatedSourceIntervention.id,
-        newRemainingAmount: updatedSourceIntervention.remainingAmount
-      });
-
-      // Create new intervention for target domain with all source data
-      const newIntervention = await tx.interventionRequest.create({
-        data: {
-          userId: req.user!.id,
-          interventionId: `${transfer.sourceIntervention.interventionId}_transfer_${transfer.id}`,
-          clientName: transfer.sourceIntervention.clientName,
-          emissionsAbated: parseFloat(transfer.amount.toString()),
-          date: transfer.sourceIntervention.date,
-          modality: transfer.sourceIntervention.modality,
-          geography: transfer.sourceIntervention.geography,
-          status: 'verified',
-          additionality: transfer.sourceIntervention.additionality,
-          causality: transfer.sourceIntervention.causality,
-          totalAmount: parseFloat(transfer.amount.toString()),
-          remainingAmount: parseFloat(transfer.amount.toString()),
-          
-          // Copy all additional fields from source
-          deliveryTicketNumber: transfer.sourceIntervention.deliveryTicketNumber,
-          materialName: transfer.sourceIntervention.materialName,
-          materialId: transfer.sourceIntervention.materialId,
-          vendorName: transfer.sourceIntervention.vendorName,
-          quantity: transfer.sourceIntervention.quantity,
-          unit: transfer.sourceIntervention.unit,
-          amount: transfer.sourceIntervention.amount,
-          materialSustainabilityStatus: transfer.sourceIntervention.materialSustainabilityStatus,
-          interventionType: transfer.sourceIntervention.interventionType,
-          lowCarbonFuel: transfer.sourceIntervention.lowCarbonFuel,
-          baselineFuelProduct: transfer.sourceIntervention.baselineFuelProduct,
-          typeOfVehicle: transfer.sourceIntervention.typeOfVehicle,
-          feedstock: transfer.sourceIntervention.feedstock,
-          emissionReductionPercentage: transfer.sourceIntervention.emissionReductionPercentage,
-          intensityOfBaseline: transfer.sourceIntervention.intensityOfBaseline,
-          intensityLowCarbonFuel: transfer.sourceIntervention.intensityLowCarbonFuel,
-          certificationScheme: transfer.sourceIntervention.certificationScheme,
-          scope: transfer.sourceIntervention.scope,
-          thirdPartyVerifier: transfer.sourceIntervention.thirdPartyVerifier,
-          standards: transfer.sourceIntervention.standards,
-          vesselType: transfer.sourceIntervention.vesselType,
-          lowCarbonFuelLiters: transfer.sourceIntervention.lowCarbonFuelLiters,
-          lowCarbonFuelMT: transfer.sourceIntervention.lowCarbonFuelMT,
-          scope3EmissionsAbated: transfer.sourceIntervention.scope3EmissionsAbated,
-          ghgEmissionSaving: transfer.sourceIntervention.ghgEmissionSaving,
-          vintage: transfer.sourceIntervention.vintage,
-          thirdPartyVerification: transfer.sourceIntervention.thirdPartyVerification,
-          otherCertificationScheme: transfer.sourceIntervention.otherCertificationScheme
-        }
-      });
-
-      console.log('Created new intervention:', {
-        id: newIntervention.id,
-        amount: newIntervention.emissionsAbated
-      });
-
-      // Update transfer status
+      // Update transfer status only
       const updated = await tx.transfer.update({
         where: { id },
         data: {
@@ -2452,8 +2476,6 @@ app.post('/api/transfers/:id/approve', authenticateToken, async (req: AuthReques
             domainId: transfer.sourceDomainId,
             metadata: {
               transferId: transfer.id,
-              sourceInterventionId: transfer.sourceInterventionId,
-              newInterventionId: newIntervention.id,
               amount: transfer.amount
             }
           },
@@ -2463,46 +2485,18 @@ app.post('/api/transfers/:id/approve', authenticateToken, async (req: AuthReques
             domainId: transfer.targetDomainId,
             metadata: {
               transferId: transfer.id,
-              sourceInterventionId: transfer.sourceInterventionId,
-              newInterventionId: newIntervention.id,
               amount: transfer.amount
             }
           }
         ]
       });
 
-      return {
-        ...updated,
-        newInterventionId: newIntervention.id
-      };
-    });
-
-    console.log('Transfer approved successfully:', {
-      transferId: id,
-      newInterventionId: updatedTransfer.newInterventionId
+      return updated;
     });
 
     res.json(updatedTransfer);
-
   } catch (error) {
-    console.error('Transfer approval error:', error);
-    
-    // Handle specific error types
-    if (error instanceof Error) {
-      const statusCode = 
-        error.message === 'Transfer not found' ? 404 :
-        error.message === 'Not authorized to approve this transfer' ? 403 :
-        error.message === 'Transfer is not pending' ? 400 :
-        error.message === 'Insufficient remaining amount in source intervention' ? 400 :
-        500;
-
-      res.status(statusCode).json({
-        error: error.message,
-        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-      });
-    } else {
-      res.status(500).json({ error: 'An unexpected error occurred' });
-    }
+    next(error);
   }
 });
 

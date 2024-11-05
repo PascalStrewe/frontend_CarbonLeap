@@ -50,7 +50,6 @@ async function createAdminEnvironment() {
 
         console.log('\nAdmin environment summary:');
         console.log('Admin Email: admin@carbonleap.nl');
-        console.log('Admin Password: Admin123!');
         console.log('Company Name:', adminDomain.companyName);
         console.log('Domain ID:', adminDomain.id);
 
