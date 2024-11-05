@@ -42,6 +42,12 @@ export class SecureSQLQueryService {
         throw new Error('Domain not found');
       }
 
+      // Special handling for verified interventions count
+      if (question.toLowerCase().includes('verified') && question.toLowerCase().includes('intervention')) {
+        const verifiedCount = await this.getVerifiedInterventionsCount(domain?.name);
+        return `This query counts verified interventions following the dashboard logic. Result: ${verifiedCount}`;
+      }
+
       const completion = await this.openai.chat.completions.create({
         model: 'gpt-4o-2024-08-06',
         messages: [
@@ -59,20 +65,18 @@ export class SecureSQLQueryService {
       
       Available fields for InterventionRequest:
       - status (string): Possible values are "pending_review", "Verified", "rejected", etc.
-      // ... (include other fields as needed)
+      - modality (string): Type of intervention including 'transfer from' and 'transfer to'
+      - remainingAmount (number): Remaining amount of emissions
+      - interventionId (string): Unique identifier
+      - claims (relation): Related carbon claims
       
-      Always use double quotes for property names and string values in the parameters.
-      
-      Your response must be valid JSON with:
-      - prismaQuery: The full Prisma query string starting with 'this.prisma.'
-      - explanation: A clear description of what the query does.`,
+      Always use double quotes for property names and string values in the parameters.`,
           },
           {
             role: 'user',
             content: question,
           },
         ],
-      
         response_format: {
           type: "json_schema",
           json_schema: {
@@ -89,6 +93,7 @@ export class SecureSQLQueryService {
           }
         }
       });
+
       const content = completion.choices[0]?.message?.content;
       if (!content) {
         throw new Error('No content returned from the model');
@@ -128,26 +133,18 @@ export class SecureSQLQueryService {
         throw new Error('Invalid JSON parameters in prismaQuery');
       }
   
-      // Inject domain filtering (as shown in Step 2)
       if (!this.userContext.isAdmin && domain) {
         if (!params.where) {
           params.where = {};
         }
-      
-        // Ensure params.where.user is an object
         if (!params.where.user) {
           params.where.user = {};
         }
-      
-        // Ensure params.where.user.domain is an object
         if (!params.where.user.domain) {
           params.where.user.domain = {};
         }
-      
-        // Inject the domain filter
         params.where.user.domain.name = domain.name;
       }
-      
   
       const model = (this.prisma as any)[modelName];
       if (!model) {
@@ -166,6 +163,39 @@ export class SecureSQLQueryService {
     }
   }
 
+  private async getVerifiedInterventionsCount(domainName?: string): Promise<number> {
+    const interventions = await this.prisma.interventionRequest.findMany({
+      where: {
+        ...(this.userContext.isAdmin || !domainName
+          ? {}
+          : { user: { domain: { name: domainName } } }),
+        OR: [
+          { status: { equals: 'Verified', mode: 'insensitive' } },
+          { status: { equals: 'completed', mode: 'insensitive' } }
+        ]
+      },
+      include: {
+        claims: {
+          where: {
+            status: 'active'
+          }
+        }
+      }
+    });
+
+    return interventions.filter(intervention => {
+      const isTransferFrom = intervention.modality?.toLowerCase().includes('transfer from');
+      const isTransferTo = 
+        intervention.modality?.toLowerCase().includes('transfer to') || 
+        (intervention.interventionId?.includes('transfer_') && !isTransferFrom);
+
+      if (isTransferFrom) return true;
+      if (isTransferTo) return false;
+
+      return intervention.remainingAmount > 0 || intervention.claims.length > 0;
+    }).length;
+  }
+
   private formatResponse(data: any, explanation: string): string {
     if (!data) return `${explanation}\n\nNo data found.`;
     if (typeof data === 'number') return `${explanation}\n\nResult: ${data}`;
@@ -179,6 +209,25 @@ export class SecureSQLQueryService {
     }
     return response;
   }
+
+  private async getTransferredCount(domainName?: string): Promise<number> {
+    const interventions = await this.prisma.interventionRequest.findMany({
+      where: {
+        ...(this.userContext.isAdmin || !domainName
+          ? {}
+          : { user: { domain: { name: domainName } } }),
+        OR: [
+          { modality: { contains: 'transfer to', mode: 'insensitive' } },
+          { interventionId: { contains: 'transfer_' } }
+        ],
+        NOT: {
+          modality: { contains: 'transfer from', mode: 'insensitive' }
+        }
+      }
+    });
+
+    return interventions.length;
+}
 
   async cleanup() {
     await this.prisma.$disconnect();

@@ -50,11 +50,11 @@ export default function ChatWithData() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
-
+  
     const question = input.trim();
     setInput('');
     setError(null);
-
+  
     const userMessage: Message = {
       type: 'user',
       content: question,
@@ -62,13 +62,13 @@ export default function ChatWithData() {
     };
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
-
+  
     try {
       const token = localStorage.getItem('token');
       if (!token) {
         throw new Error('Not authenticated');
       }
-
+  
       const response = await fetch('http://localhost:3001/api/chat-with-data', {
         method: 'POST',
         headers: {
@@ -77,17 +77,17 @@ export default function ChatWithData() {
         },
         body: JSON.stringify({ question }),
       });
-
+  
+      const data = await response.json(); // Parse once
+  
       if (!response.ok) {
-        throw new Error('Failed to get answer');
-      }
-
-      const data = await response.json();
-
-      if (!data.success) {
         throw new Error(data.message || 'Failed to get answer');
       }
-
+  
+      if (!data.success || !data.answer) {
+        throw new Error(data.message || 'Invalid response from server');
+      }
+  
       const assistantMessage: Message = {
         type: 'assistant',
         content: data.answer,
@@ -100,7 +100,7 @@ export default function ChatWithData() {
     } finally {
       setIsLoading(false);
     }
-  };
+  };  
 
   const handleQuestionClick = (question: string) => {
     setInput(question);
