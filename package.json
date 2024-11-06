@@ -12,6 +12,7 @@
     },
     "dependencies": {
         "crypto-js": "^4.2.0",
-        "qrcode": "^1.5.4"
+        "qrcode": "^1.5.4",
+        "reactflow": "^11.11.4"
     }
 }

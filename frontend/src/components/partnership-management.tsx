@@ -184,10 +184,16 @@ const PartnershipManagement: React.FC = () => {
                   </thead>
                   <tbody>
                     {filteredPartnerships.map((partnership) => {
-                      const isPartner1 = partnership.domain1.id === user?.domainId;
-                      const partnerCompany = isPartner1 
-                        ? partnership.domain2 
-                        : partnership.domain1;
+                    const isPartner1 = partnership.domain1.id === user?.domainId;
+                    const partnerCompany = isPartner1 
+                      ? partnership.domain2 
+                      : partnership.domain1;
+
+                    // Prevent displaying own company if data is incorrect
+                    if (partnerCompany.id === user?.domainId) {
+                      console.warn(`Partnership ${partnership.id} has the same domain as user.`);
+                      return null; // Or handle appropriately
+                    }
                       
                       return (
                         <tr 

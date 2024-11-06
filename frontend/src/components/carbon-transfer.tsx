@@ -10,11 +10,13 @@ import {
   Filter,
   X,
   RefreshCw,
+  Share2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useInterventions } from '../context/InterventionContext';
 import Sidebar from './Sidebar';
 import Navigation from './Navigation';
+import TransferChain from './TransferChain';
 
 
 interface Domain {
@@ -30,17 +32,20 @@ interface Transfer {
     interventionId: string;  
     modality: string;
     scope3EmissionsAbated: string;
-    remainingAmount?: string;  
+    remainingAmount?: string;
   };
   sourceDomain: {
     name: string;
     companyName: string;
+    supplyChainLevel: number;
   };
   targetDomain: {
     name: string;
     companyName: string;
+    supplyChainLevel: number;
   };
-  amount: string | number;  // Add number type since we parse it
+  sourceClaimId: string;
+  amount: string | number;
   status: 'pending' | 'completed' | 'cancelled';
   createdAt: string;
   completedAt?: string;
@@ -49,10 +54,12 @@ interface Transfer {
 
 interface TransferFormData {
   interventionId: string;
+  sourceClaimId: string;  // Add this field
   targetDomainId: number;
   amount: string;
   notes?: string;
 }
+
 
 const TransferStatusBadge: React.FC<{ status: string }> = ({ status }) => {
   const getStatusStyles = () => {
@@ -124,6 +131,7 @@ const CarbonTransfer: React.FC = () => {
   const { interventionData, refreshInterventions } = useInterventions();
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [tradingPartners, setTradingPartners] = useState<Domain[]>([]);
+  const [selectedInterventionId, setSelectedInterventionId] = useState<string | null>(null);
   const [isTransferFormOpen, setIsTransferFormOpen] = useState(false);
   const [formData, setFormData] = useState<TransferFormData>({
     interventionId: '',
@@ -179,12 +187,45 @@ const CarbonTransfer: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  const getAvailableClaimAmount = (claimId: string): number => {
+    const intervention = interventionData.find(i => 
+      i.claims?.some(c => c.id === claimId)
+    );
+    
+    if (!intervention) return 0;
+    
+    const claim = intervention.claims?.find(c => c.id === claimId);
+    if (!claim) return 0;
+  
+    // Calculate amount already transferred from this claim
+    const transferredAmount = transfers
+      .filter(t => 
+        t.sourceClaimId === claimId && 
+        t.status !== 'cancelled'
+      )
+      .reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0);
+  
+    return claim.amount - transferredAmount;
+  };
+
   const handleTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
-
+  
     try {
+      const availableAmount = getAvailableClaimAmount(formData.sourceClaimId);
+      const transferAmount = parseFloat(formData.amount);
+  
+      if (transferAmount > availableAmount) {
+        throw new Error(`Cannot transfer more than available amount (${availableAmount.toFixed(2)} tCO2e)`);
+      }
+  
+      const targetDomain = tradingPartners.find(p => p.id === formData.targetDomainId);
+      if (!targetDomain || targetDomain.supplyChainLevel <= (user?.domain?.supplyChainLevel || 0)) {
+        throw new Error('Transfers can only be made downstream in the supply chain');
+      }
+  
       const response = await fetch('http://localhost:3001/api/transfers', {
         method: 'POST',
         headers: {
@@ -277,7 +318,12 @@ const CarbonTransfer: React.FC = () => {
     
     const matchesStatus = statusFilter === 'all' || transfer.status === statusFilter;
     
-    return matchesSearch && matchesStatus;
+    // Only show transfers where the user's domain is directly involved
+    const isRelatedTransfer = 
+      transfer.sourceDomain.name === user?.domain?.name ||
+      transfer.targetDomain.name === user?.domain?.name;
+    
+    return matchesSearch && matchesStatus && isRelatedTransfer;
   });
 
   const handlePartnershipSetup = () => {
@@ -352,12 +398,13 @@ const CarbonTransfer: React.FC = () => {
                   <tbody>
                     {filteredTransfers.map((transfer) => (
                       <tr 
-                        key={transfer.id}
-                        className="border-t border-white/10 hover:bg-white/10 transition-colors duration-200"
-                      >
-                        <td className="px-4 py-3 text-[#103D5E]">
-                          {new Date(transfer.createdAt).toLocaleDateString()}
-                        </td>
+                      key={transfer.id}
+                      className="border-t border-white/10 hover:bg-white/10 transition-colors duration-200 cursor-pointer"
+                      onClick={() => setSelectedInterventionId(transfer.sourceIntervention.interventionId)}
+                    >
+                      <td className="px-4 py-3 text-[#103D5E]">
+                        {new Date(transfer.createdAt).toLocaleDateString()}
+                      </td>
                         <td className="px-4 py-3 text-[#103D5E]">
                           {transfer.sourceDomain.companyName}
                           <div className="text-sm text-[#103D5E]/60">
@@ -401,12 +448,28 @@ const CarbonTransfer: React.FC = () => {
                 )}
               </div>
             </div>
-            
+
+            {/* Transfer Chain Visualization */}
+            {selectedInterventionId && (
+              <div className="mt-8">
+                <div className="bg-white/25 backdrop-blur-md rounded-xl p-6 border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.37)]">
+                  <h2 className="text-xl font-semibold text-[#103D5E] mb-4 flex items-center gap-2">
+                    <Share2 className="h-5 w-5" />
+                    Transfer Chain Visualization
+                  </h2>
+                  <TransferChain 
+                    interventionId={selectedInterventionId} 
+                    userDomainId={user?.domainId || 0} 
+                  />
+                </div>
+              </div>
+            )}
+                        
             {/* Transfer Form Modal */}
             {isTransferFormOpen && (
               <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
                 <div className="bg-white/95 backdrop-blur-md rounded-xl p-6 w-full max-w-lg">
-                <h2 className="text-xl font-semibold text-[#103D5E] mb-4">New Transfer</h2>
+                  <h2 className="text-xl font-semibold text-[#103D5E] mb-4">New Transfer</h2>
                   {error && (
                     <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg">
                       {error}
@@ -414,22 +477,30 @@ const CarbonTransfer: React.FC = () => {
                   )}
                   <form onSubmit={handleTransfer}>
                     <div className="space-y-4">
+                      {/* Claimed Intervention */}
                       <div>
                         <label className="block text-sm font-medium text-[#103D5E]/70 mb-1">
-                          Intervention
+                          Claimed Intervention
                         </label>
                         <select
                           required
                           value={formData.interventionId}
                           onChange={(e) => setFormData(prev => ({
                             ...prev,
-                            interventionId: e.target.value
+                            interventionId: e.target.value,
+                            sourceClaimId: '',
+                            amount: ''
                           }))}
                           className="w-full px-3 py-2 bg-white/50 border border-white/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#103D5E]/50"
                         >
                           <option value="">Select intervention</option>
                           {interventionData
-                            .filter(intervention => intervention.status === 'verified')
+                            .filter(intervention => 
+                              intervention.claims?.some(claim => 
+                                claim.status === 'active' && 
+                                claim.claimingDomainId === user?.domainId
+                              )
+                            )
                             .map((intervention) => (
                               <option key={intervention.interventionId} value={intervention.interventionId}>
                                 {intervention.modality} - {intervention.emissionsAbated} tCO2e
@@ -437,7 +508,39 @@ const CarbonTransfer: React.FC = () => {
                           ))}
                         </select>
                       </div>
-                      
+                      {/* Claim to Transfer */}
+                      {formData.interventionId && (
+                        <div>
+                          <label className="block text-sm font-medium text-[#103D5E]/70 mb-1">
+                            Claim to Transfer
+                          </label>
+                          <select
+                            required
+                            value={formData.sourceClaimId}
+                            onChange={(e) => setFormData(prev => ({
+                              ...prev,
+                              sourceClaimId: e.target.value,
+                              amount: '' // Reset amount when claim changes
+                            }))}
+                            className="w-full px-3 py-2 bg-white/50 border border-white/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#103D5E]/50"
+                          >
+                            <option value="">Select claim</option>
+                            {interventionData
+                              .find(i => i.interventionId === formData.interventionId)
+                              ?.claims?.filter(claim => 
+                                claim.status === 'active' && 
+                                claim.claimingDomainId === user?.domainId
+                              )
+                              .map((claim) => (
+                                <option key={claim.id} value={claim.id}>
+                                  Claim {claim.id} - {getAvailableClaimAmount(claim.id).toFixed(2)} tCO2e available
+                                </option>
+                              ))
+                            }
+                          </select>
+                        </div>
+                      )}
+                      {/* Trading Partner */}
                       <div>
                         <label className="block text-sm font-medium text-[#103D5E]/70 mb-1">
                           Trading Partner
@@ -453,15 +556,20 @@ const CarbonTransfer: React.FC = () => {
                             className="w-full px-3 py-2 bg-white/50 border border-white/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#103D5E]/50"
                           >
                             <option value="">Select trading partner</option>
-                            {tradingPartners.map((partner) => (
-                              <option key={partner.id} value={partner.id}>
-                                {partner.companyName}
-                              </option>
-                            ))}
+                            {tradingPartners
+                              .filter(partner => {
+                                const userLevel = user?.domain?.supplyChainLevel || 0;
+                                return partner.supplyChainLevel > userLevel;
+                              })
+                              .map((partner) => (
+                                <option key={partner.id} value={partner.id}>
+                                  {partner.companyName} (Level {partner.supplyChainLevel})
+                                </option>
+                              ))}
                           </select>
                         ) : (
                           <div className="text-sm text-[#103D5E]/70 p-4 bg-white/20 rounded-lg">
-                            <p className="mb-2">No trading partners available.</p>
+                            <p className="mb-2">No eligible trading partners available.</p>
                             <button
                               type="button"
                               onClick={handlePartnershipSetup}
@@ -472,7 +580,7 @@ const CarbonTransfer: React.FC = () => {
                           </div>
                         )}
                       </div>
-
+                      {/* Amount */}
                       <div>
                         <label className="block text-sm font-medium text-[#103D5E]/70 mb-1">
                           Amount (tCO2e)
@@ -489,15 +597,13 @@ const CarbonTransfer: React.FC = () => {
                           }))}
                           className="w-full px-3 py-2 bg-white/50 border border-white/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#103D5E]/50"
                         />
-                        {formData.interventionId && (
+                        {formData.sourceClaimId && (
                           <p className="text-sm text-[#103D5E]/60 mt-1">
-                            Available: {
-                              interventionData.find(i => i.interventionId === formData.interventionId)?.emissionsAbated || 0
-                            } tCO2e
+                            Available: {getAvailableClaimAmount(formData.sourceClaimId)} tCO2e
                           </p>
                         )}
                       </div>
-                      
+                      {/* Notes */}
                       <div>
                         <label className="block text-sm font-medium text-[#103D5E]/70 mb-1">
                           Notes (Optional)
@@ -513,7 +619,7 @@ const CarbonTransfer: React.FC = () => {
                         />
                       </div>
                     </div>
-                    
+                    {/* Buttons */}
                     <div className="flex justify-end gap-4 mt-6">
                       <button
                         type="button"
@@ -526,7 +632,7 @@ const CarbonTransfer: React.FC = () => {
                       <button
                         type="submit"
                         className="flex items-center gap-2 px-4 py-2 bg-[#103D5E] text-white rounded-lg hover:bg-[#103D5E]/90 transition-all duration-300 disabled:opacity-50"
-                        disabled={loading || !tradingPartners.length}
+                        disabled={loading || !tradingPartners.length || !formData.sourceClaimId}
                       >
                         {loading ? (
                           <>

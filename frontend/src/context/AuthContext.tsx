@@ -15,6 +15,7 @@ interface User {
   id: number;
   email: string;
   isAdmin: boolean;
+  domainId: number;             // Added domainId
   domain: string;
   companyName: string;
 }
@@ -44,14 +45,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Check if token exists and validate it
-    const token = localStorage.getItem('token');
-    if (token) {
-      api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    const validateToken = async () => {
+      const token = localStorage.getItem('token');
+      if (token) {
+        try {
+          api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+          const response = await api.get('/api/validate-token'); // Create this endpoint
+          setUser(response.data.user);
+        } catch (error) {
+          console.error('Token validation failed:', error);
+          logout();
+        }
+      }
       setIsLoading(false);
-    } else {
-      setIsLoading(false);
-    }
+    };
+    validateToken();
   }, []);
 
   const login = async (email: string, password: string) => {

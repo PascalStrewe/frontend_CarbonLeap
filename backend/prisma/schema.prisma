@@ -112,6 +112,9 @@ model CarbonClaim {
   interventionId   String
   claimingDomain   Domain              @relation("DomainClaims", fields: [claimingDomainId], references: [id])
   claimingDomainId Int
+  transfers        Transfer[]          @relation("ClaimTransfers")
+  claimLevel       Int
+  @@unique([interventionId, claimLevel], name: "unique_claim_per_tier")
   amount           Float               // Amount claimed in tCO2e
   vintage          Int                 // Year of the vintage
   expiryDate       DateTime            // When the claim expires
@@ -134,6 +137,8 @@ model Transfer {
   sourceInterventionId  String
   // Removed targetIntervention relation since we keep same intervention
   sourceDomain          Domain              @relation("SourceDomain", fields: [sourceDomainId], references: [id])
+  sourceClaim          CarbonClaim         @relation("ClaimTransfers", fields: [sourceClaimId], references: [id])
+  sourceClaimId        String
   sourceDomainId        Int
   targetDomain          Domain              @relation("TargetDomain", fields: [targetDomainId], references: [id])
   targetDomainId        Int

@@ -29,12 +29,15 @@ interface Claim {
     interventionId: string;
     certificationScheme: string;
     vintage: number;
+    totalAmount: number;
+    claimedAmount?: number;
   };
   amount: number;
   vintage: number;
   expiryDate: Date;
   status: string;
   statement?: ClaimStatement;
+  supplyChainLevel: number;
 }
 
 interface Intervention {
@@ -174,18 +177,27 @@ const CarbonClaims = () => {
       return 0;
     }
   
-    // For incoming transfers or original interventions
-    const existingClaims = claims.filter(
-      claim => claim.intervention.interventionId === interventionId && claim.status === 'active'
+    // Get existing claims at user's supply chain level
+    const existingClaimAtLevel = claims.find(
+      claim => claim.intervention.interventionId === interventionId && 
+               claim.supplyChainLevel === user?.domain?.supplyChainLevel &&
+               claim.status === 'active'
     );
+
+    // If a claim already exists at this level, no more claiming is allowed
+    if (existingClaimAtLevel) {
+      return 0;
+    }
     
-    const totalClaimed = existingClaims.reduce(
-      (sum, claim) => sum + claim.amount,
+    // Calculate total claimed across all levels
+    const totalClaimed = claims.reduce(
+      (sum, claim) => claim.intervention.interventionId === interventionId && 
+                     claim.status === 'active' ? sum + claim.amount : sum,
       0
     );
   
     return intervention.emissionsAbated - totalClaimed;
-  }, [claims, interventions]);
+}, [claims, interventions, user?.domain?.supplyChainLevel]);
 
   const availableInterventions = useMemo(() => 
     interventions.filter(intervention => {
@@ -248,6 +260,17 @@ const CarbonClaims = () => {
         throw new Error('Please enter a valid amount');
       }
 
+      // Get existing claims for this intervention at user's supply chain level
+      const existingClaimAtLevel = claims.find(claim => 
+        claim.intervention.interventionId === selectedIntervention && 
+        claim.supplyChainLevel === user?.domain?.supplyChainLevel &&
+        claim.status === 'active'
+      );
+
+      if (existingClaimAtLevel) {
+        throw new Error(`A claim already exists for this intervention at your supply chain level (${user?.domain?.supplyChainLevel})`);
+      }
+
       const availableAmount = calculateAvailableAmount(selectedIntervention);
       if (amount > availableAmount) {
         throw new Error(`Cannot claim more than available amount (${availableAmount.toFixed(2)} tCO2e)`);
@@ -261,7 +284,8 @@ const CarbonClaims = () => {
         },
         body: JSON.stringify({
           interventionId: selectedIntervention,
-          amount: amount
+          amount: amount,
+          supplyChainLevel: user?.domain?.supplyChainLevel
         })
       });
 
@@ -279,7 +303,7 @@ const CarbonClaims = () => {
       // Refresh data after successful claim
       if (refreshInterventions) {
         refreshInterventions();
-        setTimeout(refreshInterventions, 1000); // Additional refresh after a delay
+        setTimeout(refreshInterventions, 1000);
       }
     } catch (error) {
       console.error('Error creating claim:', error);
@@ -433,9 +457,10 @@ const CarbonClaims = () => {
                 <table className="w-full">
                   <thead>
                     <tr className="text-[#103D5E]/70 text-sm">
-                      <th className="px-4 py-2 text-left">Intervention</th>
-                      <th className="px-4 py-2 text-left">Amount</th>
-                      <th className="px-4 py-2 text-left">Vintage</th>
+                    <th className="px-4 py-2 text-left">Intervention</th>
+                    <th className="px-4 py-2 text-left">Amount</th>
+                    <th className="px-4 py-2 text-left">Supply Chain Level</th>
+                    <th className="px-4 py-2 text-left">Vintage</th>
                       <th className="px-4 py-2 text-left">Expiry</th>
                       <th className="px-4 py-2 text-left">Status</th>
                       <th className="px-4 py-2 text-left">Statement</th>
@@ -452,6 +477,9 @@ const CarbonClaims = () => {
                           <div className="text-sm text-[#103D5E]/60">
                             {claim.intervention.geography}
                           </div>
+                        </td>
+                        <td className="px-4 py-3 text-[#103D5E]">
+                          Level {claim.supplyChainLevel}
                         </td>
                         <td className="px-4 py-3 text-[#103D5E]">
                           {claim.amount.toFixed(2)} tCO2e

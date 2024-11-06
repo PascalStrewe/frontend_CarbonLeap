@@ -471,6 +471,7 @@ app.post('/api/login', async (
         id: user.id,
         email: user.email,
         isAdmin: user.isAdmin,
+        domainId: user.domainId,               
         domain: user.domain.name,
         companyName: user.domain.companyName,
       },
@@ -1795,6 +1796,10 @@ app.get('/api/domains/available', authenticateToken, async (req: AuthRequest, re
   }
 });
 
+app.get('/api/validate-token', authenticateToken, async (req: AuthRequest, res: Response) => {
+  res.json({ user: req.user });
+});
+
 // Get domain's supply chain level
 app.get('/api/domains/:id/supply-chain-level', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
@@ -1895,7 +1900,12 @@ app.post('/api/partnerships', authenticateToken, async (req: AuthRequest, res: R
       return res.status(400).json({ error: 'Partner domain ID is required' });
     }
 
-    // Check if partnership already exists
+    // Prevent self-partnership
+    if (parseInt(domainId) === req.user!.domainId) {
+      return res.status(400).json({ error: 'Cannot create a partnership with your own domain' });
+    }
+
+    // Existing partnership check...
     const existingPartnership = await prisma.domainPartnership.findFirst({
       where: {
         OR: [
