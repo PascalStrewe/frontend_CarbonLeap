@@ -10,32 +10,38 @@ import {
   Save, 
   Download,
   FileUp,
-  Search  
+  Search,
+  Trash2,
+  Info,
+  AlertTriangle,
+  ChevronUp,
+  ChevronDown,
+  Filter
 } from 'lucide-react';
 import { useInterventions } from '../context/InterventionContext';
 import Sidebar from './Sidebar';
-import axios from 'axios'; // Import axios for HTTP requests
+import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import Navigation from './Navigation';
 
-
-// Define an interface for Intervention Data for better type safety
-
+// Extended interface for sorting and deletion
 interface InterventionData {
+  id?: string;
   clientName: string;
   emissionsAbated: number;
-  date: string; // ISO format
+  date: string;
   interventionId: string;
   modality: string;
   geography: string;
   additionality: boolean;
   causality: boolean;
   status: string;
-  lowCarbonFuel: string; // Defaults to "n/a" if missing
-  feedstock: string;      // Defaults to "n/a" if missing
-  certificationScheme: string; // Defaults to "n/a" if missing
-  vintage: number;        // Add this line
+  lowCarbonFuel: string;
+  feedstock: string;
+  certificationScheme: string;
+  vintage: number;
+  hasClaims?: boolean;
 }
 
 interface Domain {
@@ -51,6 +57,11 @@ interface User {
     name: string;
     companyName: string;
   };
+}
+
+interface SortConfig {
+  key: keyof InterventionData;
+  direction: 'asc' | 'desc';
 }
 
 // Helper function to parse Prisma errors into user-friendly messages
@@ -86,6 +97,8 @@ const AdminUpload = () => {
   const { addInterventions, refreshInterventions } = useInterventions();
   const { user } = useAuth();
   const navigate = useNavigate();
+  
+  // State declarations with new additions
   const [dragActive, setDragActive] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [processing, setProcessing] = useState(false);
@@ -98,7 +111,16 @@ const AdminUpload = () => {
   const [filteredDomains, setFilteredDomains] = useState<Domain[]>([]);
   const [processedData, setProcessedData] = useState<InterventionData[]>([]);
   const [skippedRows, setSkippedRows] = useState<{ row: number; reason: string; content: string }[]>([]);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'date', direction: 'desc' });
+  const [selectedInterventions, setSelectedInterventions] = useState<string[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showTooltip, setShowTooltip] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [itemsPerPage] = useState(10);
 
+  // Effect hooks
   useEffect(() => {
     if (!user?.isAdmin) {
       navigate('/dashboard');
@@ -130,52 +152,129 @@ const AdminUpload = () => {
     setFilteredDomains(filtered);
   }, [searchTerm, domains]);
 
-  // Function to parse various date formats into ISO format
-  const parseDate = (dateStr: string): string => {
-    const formats = [
-      /^\d{4}-\d{2}-\d{2}/, // ISO format
-      /^(\d{1,2})\/(\d{1,2})\/(\d{4})/, // DD/MM/YYYY or MM/DD/YYYY
-      /^(\d{1,2})-(\d{1,2})-(\d{4})/, // DD-MM-YYYY
-      /^(\d{1,2})\.(\d{1,2})\.(\d{4})/ // DD.MM.YYYY
-    ];
+  // Sort function for data
+  const sortData = useCallback((data: InterventionData[]) => {
+    return [...data].sort((a, b) => {
+      if (a[sortConfig.key] < b[sortConfig.key]) {
+        return sortConfig.direction === 'asc' ? -1 : 1;
+      }
+      if (a[sortConfig.key] > b[sortConfig.key]) {
+        return sortConfig.direction === 'asc' ? 1 : -1;
+      }
+      return 0;
+    });
+  }, [sortConfig]);
 
-    for (const format of formats) {
-      if (format.test(dateStr)) {
-        const date = new Date(dateStr);
-        if (!isNaN(date.getTime())) {
-          return date.toISOString().split('T')[0];
+  // Handle column sort
+  const handleSort = (key: keyof InterventionData) => {
+    setSortConfig(prevConfig => ({
+      key,
+      direction: prevConfig.key === key && prevConfig.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  // Delete handler with error handling and loading state
+  const handleDeleteIntervention = async (id: string) => {
+    try {
+      setIsDeleting(true);
+      setError('');
+      
+      const response = await fetch(`/api/interventions/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to delete intervention');
+      }
+
+      // Update local state
+      setProcessedData(prev => prev.filter(item => item.interventionId !== id));
+      setPreview(prev => prev.filter(item => item.interventionId !== id));
+      
+      // Refresh data after successful deletion
+      if (refreshInterventions) {
+        await refreshInterventions();
+      }
+
+      setShowDeleteConfirm(false);
+      setDeletingId(null);
+      setSuccess('Intervention deleted successfully');
+      
+      // Clear selection if item was selected
+      setSelectedInterventions(prev => prev.filter(selectedId => selectedId !== id));
+
+    } catch (error) {
+      console.error('Error deleting intervention:', error);
+      setError(error instanceof Error ? error.message : 'Failed to delete intervention');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // Bulk delete handler
+  const handleBulkDelete = async () => {
+    try {
+      setIsDeleting(true);
+      setError('');
+
+      // Sequential deletion with error handling
+      for (const id of selectedInterventions) {
+        try {
+          await handleDeleteIntervention(id);
+        } catch (error) {
+          console.error(`Failed to delete intervention ${id}:`, error);
+          throw new Error(`Failed to delete some interventions. Please try again.`);
         }
       }
+
+      setSelectedInterventions([]);
+      setSuccess('Selected interventions deleted successfully');
+
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to delete selected interventions');
+    } finally {
+      setIsDeleting(false);
     }
+  };
+
+  // Selection handlers
+  const handleSelectAll = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.checked) {
+      const selectableInterventions = processedData
+        .filter(intervention => !intervention.hasClaims)
+        .map(intervention => intervention.interventionId);
+      setSelectedInterventions(selectableInterventions);
+    } else {
+      setSelectedInterventions([]);
+    }
+  };
+
+  const handleSelectIntervention = (id: string, hasClaims: boolean) => {
+    if (hasClaims) return;
     
-    // Fallback to direct parsing
-    const date = new Date(dateStr);
-    if (!isNaN(date.getTime())) {
-      return date.toISOString().split('T')[0];
-    }
-
-    throw new Error(`Invalid date format: ${dateStr}`);
+    setSelectedInterventions(prev => {
+      if (prev.includes(id)) {
+        return prev.filter(selectedId => selectedId !== id);
+      } else {
+        return [...prev, id];
+      }
+    });
   };
 
-  // Function to clean CSV cell values
-  const cleanValue = (value: string): string => {
-    if (!value) return '';
-    return value.replace(/^\ufeff/, '').replace(/[\uFEFF\xA0]/g, '').trim();
-  };
+  // Pagination helpers
+  const paginatedData = useCallback(() => {
+    const sorted = sortData(processedData);
+    const start = (page - 1) * itemsPerPage;
+    return sorted.slice(start, start + itemsPerPage);
+  }, [processedData, page, itemsPerPage, sortData]);
 
-  // Function to validate an intervention record
-  const validateRecord = (record: InterventionData): string[] => {
-    const errors: string[] = [];
-
-    if (!record.clientName) errors.push('clientName is required.');
-    if (!record.interventionId) errors.push('interventionId is required.');
-    if (isNaN(record.emissionsAbated)) errors.push('emissionsAbated must be a number.');
-    if (!record.date) errors.push('date is required.');
-
-    // No need to validate optional fields since they default to "n/a"
-
-    return errors;
-  };
+  const totalPages = Math.ceil(processedData.length / itemsPerPage);
 
   // Function to parse CSV text into structured data
   const parseCSV = useCallback((text: string): InterventionData[] => {
@@ -224,7 +323,7 @@ const AdminUpload = () => {
       causality: headers.findIndex(h => h.includes('CAUSALITY'))
     };
 
-    // Check for missing required columns (excluding optional ones)
+    // Check for missing required columns
     const missingColumns = [];
     if (columnIndices.clientName === -1) missingColumns.push('CLIENT NAME');
     if (columnIndices.emissionsAbated === -1) missingColumns.push('EMISSIONS ABATED');
@@ -237,25 +336,17 @@ const AdminUpload = () => {
 
     // Parse each data row
     const results: InterventionData[] = [];
-    for (let i = 1; i < lines.length; i++) { // Start from 1 to skip header
+    for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
 
       try {
-        // Split the line by delimiter and clean values
         const values = line.split(delimiter).map(val => cleanValue(val));
 
-        // Parse date
-        let date = values[columnIndices.deliveryDate];
-        if (date) {
-          date = parseDate(date);
-        }
-
-        // Create record object with default "n/a" for optional fields
         const record: InterventionData = {
           clientName: values[columnIndices.clientName],
           emissionsAbated: parseFloat(values[columnIndices.emissionsAbated].replace(',', '.')) || 0,
-          date: date,
+          date: parseDate(values[columnIndices.deliveryDate]),
           interventionId: values[columnIndices.interventionId],
           modality: columnIndices.modality !== -1 ? values[columnIndices.modality] : 'Unknown',
           geography: columnIndices.geography !== -1 ? values[columnIndices.geography] : 'Unknown',
@@ -265,37 +356,33 @@ const AdminUpload = () => {
           causality: columnIndices.causality !== -1 
             ? values[columnIndices.causality]?.toLowerCase().includes('yes') 
             : false,
-          status: 'Verified', // Default status
-          lowCarbonFuel: columnIndices.lowCarbonFuel !== -1 && values[columnIndices.lowCarbonFuel] ? values[columnIndices.lowCarbonFuel] : 'n/a',
-          feedstock: columnIndices.feedstock !== -1 && values[columnIndices.feedstock] ? values[columnIndices.feedstock] : 'n/a',
-          certificationScheme: columnIndices.certificationScheme !== -1 && values[columnIndices.certificationScheme] ? values[columnIndices.certificationScheme] : 'n/a',
-          // Handle vintage field by converting string to integer
-          vintage: parseInt(values[values.findIndex(col => col.toUpperCase() === 'VINTAGE')]?.replace(',', '.')) || 0
+          status: 'Verified',
+          lowCarbonFuel: columnIndices.lowCarbonFuel !== -1 && values[columnIndices.lowCarbonFuel] 
+            ? values[columnIndices.lowCarbonFuel] 
+            : 'n/a',
+          feedstock: columnIndices.feedstock !== -1 && values[columnIndices.feedstock] 
+            ? values[columnIndices.feedstock] 
+            : 'n/a',
+          certificationScheme: columnIndices.certificationScheme !== -1 && values[columnIndices.certificationScheme] 
+            ? values[columnIndices.certificationScheme] 
+            : 'n/a',
+          vintage: new Date().getFullYear()
         };
 
-        // Validate record (excluding optional fields)
-        const validationErrors: string[] = [];
-
-        if (!record.clientName) validationErrors.push('clientName is required.');
-        if (!record.interventionId) validationErrors.push('interventionId is required.');
-        if (isNaN(record.emissionsAbated)) validationErrors.push('emissionsAbated must be a number.');
-        if (!record.date) validationErrors.push('date is required.');
-
-        // No need to validate optional fields since they default to "n/a"
-
+        const validationErrors = validateRecord(record);
         if (validationErrors.length === 0) {
           results.push(record);
         } else {
           skipped.push({
-            row: i + 1, // Assuming first row is headers
+            row: i + 1,
             reason: validationErrors.join(' '),
             content: line
           });
         }
-      } catch (err: any) {
+      } catch (err) {
         skipped.push({
           row: i + 1,
-          reason: err.message,
+          reason: err instanceof Error ? err.message : 'Unknown error',
           content: line
         });
       }
@@ -328,7 +415,7 @@ const AdminUpload = () => {
       setError('Please upload a CSV file only');
       return;
     }
-  
+
     setProcessing(true);
     setError('');
     setSuccess('');
@@ -343,11 +430,11 @@ const AdminUpload = () => {
         const data = parseCSV(text);  // Parse the CSV data first
         setProcessedData(data);
         setPreview(data.slice(0, 5));
-  
+
         const formData = new FormData();
         formData.append('file', file);
         formData.append('domainId', selectedDomain.id.toString());
-  
+
         try {
           const response = await axios.post('/api/admin/upload-interventions', formData, {
             headers: {
@@ -355,7 +442,7 @@ const AdminUpload = () => {
               Authorization: `Bearer ${localStorage.getItem('token')}`
             }
           });
-  
+
           if (response.data.success) {
             const uploadedCount = response.data.uploadedCount || 'multiple';
             const skippedCount = response.data.skippedCount || 0;
@@ -380,7 +467,6 @@ const AdminUpload = () => {
           }
         } catch (err) {
           if (axios.isAxiosError(err) && err.response) {
-            // Log detailed error information for debugging
             console.error('Upload Error Details:', {
               status: err.response?.status,
               statusText: err.response?.statusText,
@@ -389,7 +475,6 @@ const AdminUpload = () => {
 
             let errorMessage = 'Failed to upload file';
 
-            // Handle different error scenarios
             switch (err.response.status) {
               case 400:
                 errorMessage = err.response.data.error || 'Invalid request. Please check your file format.';
@@ -416,11 +501,10 @@ const AdminUpload = () => {
 
             setError(errorMessage);
 
-            // If in development, log the full error
             if (import.meta.env.DEV) {
               console.error('Full error details:', err.response.data);
-            }  
-                    } else {
+            }
+          } else {
             console.error('Upload error:', err);
             setError('Failed to upload file');
           }
@@ -432,14 +516,86 @@ const AdminUpload = () => {
         setProcessing(false);
       }
     };
-  
+
     reader.onerror = () => {
       setError('Error reading file');
       setProcessing(false);
     };
-  
+
     reader.readAsText(file);
   }, [selectedDomain, refreshInterventions, parseCSV]);
+
+  // Function to parse various date formats into ISO format
+  const parseDate = (dateStr: string): string => {
+    const formats = [
+      /^\d{4}-\d{2}-\d{2}/, // ISO format
+      /^(\d{1,2})\/(\d{1,2})\/(\d{4})/, // DD/MM/YYYY or MM/DD/YYYY
+      /^(\d{1,2})-(\d{1,2})-(\d{4})/, // DD-MM-YYYY
+      /^(\d{1,2})\.(\d{1,2})\.(\d{4})/ // DD.MM.YYYY
+    ];
+
+    for (const format of formats) {
+      if (format.test(dateStr)) {
+        const date = new Date(dateStr);
+        if (!isNaN(date.getTime())) {
+          return date.toISOString().split('T')[0];
+        }
+      }
+    }
+    
+    // Fallback to direct parsing
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      return date.toISOString().split('T')[0];
+    }
+
+    throw new Error(`Invalid date format: ${dateStr}`);
+  };
+
+  // Function to clean CSV cell values
+  const cleanValue = (value: string): string => {
+    if (!value) return '';
+    return value.replace(/^\ufeff/, '').replace(/[\uFEFF\xA0]/g, '').trim();
+  };
+
+  // Function to validate an intervention record
+  const validateRecord = (record: InterventionData): string[] => {
+    const errors: string[] = [];
+
+    if (!record.clientName) errors.push('clientName is required.');
+    if (!record.interventionId) errors.push('interventionId is required.');
+    if (isNaN(record.emissionsAbated)) errors.push('emissionsAbated must be a number.');
+    if (!record.date) errors.push('date is required.');
+
+    return errors;
+  };
+
+  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(e.target.files || []);
+    setFiles(prev => [...prev, ...selectedFiles]);
+    if (selectedFiles.length > 0) {
+      processFile(selectedFiles[0]);
+    }
+  }, [processFile]);
+
+  // Function to download skipped rows as a text file
+  const downloadSkippedRows = useCallback(() => {
+    if (skippedRows.length === 0) return;
+
+    const content = skippedRows.map(row => 
+      `Row ${row.row}: ${row.reason}\n${row.content}`
+    ).join('\n\n');
+    
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'skipped_rows.txt';
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  }, [skippedRows]);
 
   // Handlers for drag and drop events
   const handleDrag = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -468,34 +624,6 @@ const AdminUpload = () => {
     processFile(csvFiles[0]);
   }, [processFile]);
 
-  // Handler for file input selection
-  const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(e.target.files || []);
-    setFiles(prev => [...prev, ...selectedFiles]);
-    if (selectedFiles.length > 0) {
-      processFile(selectedFiles[0]);
-    }
-  }, [processFile]);
-
-  // Function to download skipped rows as a text file
-  const downloadSkippedRows = useCallback(() => {
-    if (skippedRows.length === 0) return;
-
-    const content = skippedRows.map(row => 
-      `Row ${row.row}: ${row.reason}\n${row.content}`
-    ).join('\n\n');
-    
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'skipped_rows.txt';
-    document.body.appendChild(a);
-    a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
-  }, [skippedRows]);
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#b9dfd9] to-[#fff2ec]">
       <Navigation />
@@ -503,7 +631,7 @@ const AdminUpload = () => {
         <Sidebar />
         <div className="flex-1 p-8">
           <div className="max-w-7xl mx-auto space-y-6">
-            {/* Header */}
+            {/* Header with bulk actions */}
             <div className="flex justify-between items-center">
               <div>
                 <h1 className="text-2xl font-bold text-[#103D5E]">Upload Intervention Data</h1>
@@ -511,21 +639,62 @@ const AdminUpload = () => {
                   Import and process intervention records
                 </p>
               </div>
-              {processedData.length > 0 && (
-                <button
-                  onClick={() => {
-                    console.log('Saving processed data:', processedData);
-                    setSuccess('Data saved successfully!');
-                  }}
-                  className="flex items-center gap-2 bg-[#103D5E] text-white px-4 py-2 rounded-lg hover:bg-[#103D5E]/90 transition-all"
-                >
-                  <Save className="h-4 w-4" />
-                  Save Data
-                </button>
-              )}
+              <div className="flex items-center gap-4">
+                {selectedInterventions.length > 0 && (
+                  <button
+                    onClick={() => setShowDeleteConfirm(true)}
+                    disabled={isDeleting}
+                    className="flex items-center gap-2 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-all duration-300 disabled:opacity-50"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></span>
+                        Deleting...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="h-4 w-4" />
+                        Delete Selected ({selectedInterventions.length})
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
 
-            {/* User Selection */}
+            {/* Status Messages with improved styling */}
+            {error && (
+              <div className="mt-4 backdrop-blur-md p-4 rounded-lg flex items-start space-x-2 bg-red-50/50 text-red-500 border border-red-200">
+                <AlertTriangle className="h-5 w-5 flex-shrink-0 mt-1" />
+                <div className="flex-1">
+                  <div className="font-medium">Error</div>
+                  <div className="mt-1 text-sm whitespace-pre-line">{error}</div>
+                </div>
+                <button 
+                  onClick={() => setError('')}
+                  className="text-red-500 hover:text-red-700"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+
+            {success && (
+              <div className="mt-4 backdrop-blur-md p-4 rounded-lg flex items-center justify-between bg-green-50/50 text-green-500 border border-green-200">
+                <div className="flex items-center space-x-2">
+                  <CheckCircle2 className="h-5 w-5" />
+                  <span>{success}</span>
+                </div>
+                <button 
+                  onClick={() => setSuccess('')}
+                  className="text-green-500 hover:text-green-700"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+
+            {/* User Selection with improved domain search */}
             <div className="mt-4">
               <label className="block text-sm font-medium text-[#103D5E] mb-1">
                 Select Domain
@@ -542,6 +711,7 @@ const AdminUpload = () => {
                 />
               </div>
               
+              {/* Domain selection dropdown */}
               {filteredDomains.length > 0 && searchTerm && !selectedDomain && (
                 <div className="mt-2 bg-white/50 rounded-lg border border-white/20 max-h-48 overflow-y-auto">
                   {filteredDomains.map(domain => (
@@ -552,7 +722,7 @@ const AdminUpload = () => {
                         setSelectedDomain(domain);
                         setSearchTerm('');
                       }}
-                      className="w-full px-4 py-2 text-left hover:bg-white/50 text-[#103D5E]"
+                      className="w-full px-4 py-2 text-left hover:bg-white/50 text-[#103D5E] transition-colors"
                     >
                       <div className="font-medium">{domain.companyName}</div>
                       <div className="text-sm text-[#103D5E]/70">{domain.name}</div>
@@ -561,6 +731,7 @@ const AdminUpload = () => {
                 </div>
               )}
 
+              {/* Selected domain display */}
               {selectedDomain && (
                 <div className="mt-4 flex items-center justify-between bg-white/50 p-4 rounded-lg">
                   <div>
@@ -569,7 +740,7 @@ const AdminUpload = () => {
                   </div>
                   <button
                     onClick={() => setSelectedDomain(null)}
-                    className="text-red-500 hover:text-red-700"
+                    className="text-red-500 hover:text-red-700 transition-colors"
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -577,18 +748,22 @@ const AdminUpload = () => {
               )}
             </div>
 
-            {/* Upload Zone */}
+            {/* Upload Zone with improved drag and drop */}
             <div
               className={`bg-white/25 backdrop-blur-md border-2 border-dashed rounded-lg p-8 text-center 
-                transition-colors duration-200 ${
-                dragActive ? 'border-[#103D5E] bg-[#B9D9DF]/20' : 'border-white/50'
+                transition-all duration-300 ${
+                dragActive 
+                  ? 'border-[#103D5E] bg-[#B9D9DF]/20 scale-[1.02]' 
+                  : 'border-white/50 hover:border-[#103D5E]/50'
               }`}
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
               onDragOver={handleDrag}
               onDrop={handleDrop}
             >
-              <FileUp className="mx-auto h-12 w-12 text-[#103D5E]" />
+              <FileUp className={`mx-auto h-12 w-12 text-[#103D5E] transition-transform duration-300 ${
+                dragActive ? 'scale-110' : ''
+              }`} />
               <p className="mt-2 text-sm text-[#103D5E]">
                 Drag and drop your CSV files here, or{" "}
                 <label className="text-[#103D5E] font-medium hover:underline cursor-pointer">
@@ -607,81 +782,252 @@ const AdminUpload = () => {
               </p>
             </div>
 
-            {/* Status Messages */}
-            {error && (
-              <div className="mt-4 backdrop-blur-md p-4 rounded-lg flex items-start space-x-2 bg-red-50/50 text-red-500">
-                <AlertCircle className="h-5 w-5 flex-shrink-0 mt-1" />
-                <div className="flex-1">
-                  <div className="font-medium">Error uploading file</div>
-                  <div className="mt-1 text-sm whitespace-pre-line">{error}</div>
-                </div>
-              </div>
-            )}
-
-            {success && (
-              <div className="mt-4 backdrop-blur-md p-4 rounded-lg flex items-center space-x-2 bg-green-50/50 text-green-500">
-                <CheckCircle2 className="h-5 w-5" />
-                <span>{success}</span>
-              </div>
-            )}
-
-            {/* Skipped Rows Download */}
+            {/* Skipped Rows Download with improved button */}
             {skippedRows.length > 0 && (
               <div className="mt-4">
                 <button
                   onClick={downloadSkippedRows}
-                  className="flex items-center gap-2 text-[#103D5E] hover:text-[#103D5E]/70 text-sm"
+                  className="flex items-center gap-2 text-[#103D5E] hover:text-[#103D5E]/70 text-sm
+                    bg-white/25 px-4 py-2 rounded-lg transition-colors"
                 >
                   <Download className="h-4 w-4" />
-                  Download skipped rows report
+                  Download skipped rows report ({skippedRows.length} issues found)
                 </button>
               </div>
             )}
 
-            {/* Data Preview */}
+            {/* Data Preview with improved table */}
             {preview.length > 0 && (
               <div className="bg-white/25 backdrop-blur-md rounded-lg p-6 border border-white/20">
                 <h2 className="text-lg font-semibold text-[#103D5E] mb-4 flex items-center gap-2">
                   <Eye className="h-5 w-5" />
-                  Data Preview (First 5 records)
+                  Data Preview
                 </h2>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-white/20">
-                        <th className="px-4 py-2 text-left">Client Name</th>
-                        <th className="px-4 py-2 text-left">Intervention ID</th>
-                        <th className="px-4 py-2 text-left">Date</th>
-                        <th className="px-4 py-2 text-left">Emissions Abated</th>
-                        <th className="px-4 py-2 text-left">Low Carbon Fuel</th>
-                        <th className="px-4 py-2 text-left">Feedstock</th>
-                        <th className="px-4 py-2 text-left">Certification Scheme</th>
-                        <th className="px-4 py-2 text-left">Modality</th>
-                        <th className="px-4 py-2 text-left">Geography</th>
-                        <th className="px-4 py-2 text-left">Additionality</th>
-                        <th className="px-4 py-2 text-left">Causality</th>
-                        <th className="px-4 py-2 text-left">Status</th>
+                        <th className="px-4 py-2 text-left">
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              checked={selectedInterventions.length === preview.length}
+                              onChange={handleSelectAll}
+                              className="rounded border-white/20"
+                            />
+                          </div>
+                        </th>
+                        {/* Column headers with sort indicators */}
+                        {['Client Name', 'Intervention ID', 'Date', 'Emissions Abated', 'Modality', 'Geography', 'Status', 'Actions'].map((header) => (
+                          <th 
+                            key={header}
+                            className="px-4 py-2 text-left cursor-pointer hover:bg-white/10 transition-colors"
+                            onClick={() => handleSort(header.toLowerCase().replace(' ', '') as keyof InterventionData)}
+                          >
+                            <div className="flex items-center space-x-1">
+                              <span>{header}</span>
+                              {sortConfig.key === header.toLowerCase().replace(' ', '') && (
+                                sortConfig.direction === 'asc' ? 
+                                  <ChevronUp className="h-4 w-4" /> : 
+                                  <ChevronDown className="h-4 w-4" />
+                              )}
+                            </div>
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {preview.map((row, index) => (
-                        <tr key={index} className="border-b border-white/10">
+                      {paginatedData().map((row, index) => (
+                        <tr 
+                          key={row.interventionId}
+                          className={`border-b border-white/10 hover:bg-white/10 transition-colors ${
+                            selectedInterventions.includes(row.interventionId) ? 'bg-white/20' : ''
+                          }`}
+                        >
+                          <td className="px-4 py-2">
+                            <input
+                              type="checkbox"
+                              checked={selectedInterventions.includes(row.interventionId)}
+                              onChange={() => handleSelectIntervention(row.interventionId, row.hasClaims || false)}
+                              disabled={row.hasClaims}
+                              className="rounded border-white/20"
+                            />
+                          </td>
                           <td className="px-4 py-2">{row.clientName}</td>
                           <td className="px-4 py-2">{row.interventionId}</td>
                           <td className="px-4 py-2">{row.date}</td>
                           <td className="px-4 py-2">{row.emissionsAbated.toFixed(1)} tCO2e</td>
-                          <td className="px-4 py-2">{row.lowCarbonFuel}</td>
-                          <td className="px-4 py-2">{row.feedstock}</td>
-                          <td className="px-4 py-2">{row.certificationScheme}</td>
                           <td className="px-4 py-2">{row.modality}</td>
                           <td className="px-4 py-2">{row.geography}</td>
-                          <td className="px-4 py-2">{row.additionality ? 'Yes' : 'No'}</td>
-                          <td className="px-4 py-2">{row.causality ? 'Yes' : 'No'}</td>
-                          <td className="px-4 py-2">{row.status}</td>
+                          <td className="px-4 py-2">
+                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                              row.status === 'Verified' 
+                                ? 'bg-green-100 text-green-800' 
+                                : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              {row.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2">
+                            <div className="flex items-center space-x-2">
+                              <button
+                                onClick={() => {
+                                  if (!row.hasClaims) {
+                                    setDeletingId(row.interventionId);
+                                    setShowDeleteConfirm(true);
+                                  }
+                                }}
+                                disabled={row.hasClaims}
+                                className={`p-1 rounded-full transition-colors ${
+                                  row.hasClaims 
+                                    ? 'text-gray-400 cursor-not-allowed' 
+                                    : 'text-red-500 hover:bg-red-50'
+                                }`}
+                                onMouseEnter={() => row.hasClaims && setShowTooltip(row.interventionId)}
+                                onMouseLeave={() => setShowTooltip(null)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                              {showTooltip === row.interventionId && row.hasClaims && (
+                                <div className="absolute bg-black/75 text-white px-2 py-1 rounded text-xs">
+                                  Cannot delete: Has active claims
+                                </div>
+                              )}
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Pagination controls */}
+                {totalPages > 1 && (
+                  <div className="mt-4 flex justify-between items-center">
+                    <div className="text-sm text-[#103D5E]/70">
+                      Showing {((page - 1) * itemsPerPage) + 1} to {Math.min(page * itemsPerPage, processedData.length)} of {processedData.length} entries
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => setPage(p => Math.max(1, p - 1))}
+                        disabled={page === 1}
+                        className="px-3 py-1 rounded bg-white/25 text-[#103D5E] disabled:opacity-50"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-[#103D5E]">
+                        Page {page} of {totalPages}
+                      </span>
+                      <button
+                        onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                        disabled={page === totalPages}
+                        className="px-3 py-1 rounded bg-white/25 text-[#103D5E] disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Delete Confirmation Modal */}
+            {showDeleteConfirm && (
+              <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+                <div className="bg-white/95 backdrop-blur-md rounded-xl p-6 w-full max-w-md">
+                  <h2 className="text-xl font-semibold text-[#103D5E] mb-4">Confirm Delete</h2>
+                  <p className="text-[#103D5E]/70 mb-6">
+                    {selectedInterventions.length > 0 
+                      ? `Are you sure you want to delete ${selectedInterventions.length} selected interventions?`
+                      : 'Are you sure you want to delete this intervention?'} 
+                    This action cannot be undone.
+                  </p>
+                  <div className="flex justify-end gap-4">
+                    <button
+                      onClick={() => {
+                        setShowDeleteConfirm(false);
+                        setDeletingId(null);
+                      }}
+                      disabled={isDeleting}
+                      className="px-4 py-2 text-[#103D5E] hover:bg-white/20 rounded-lg transition-all duration-300"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (selectedInterventions.length > 0) {
+                          handleBulkDelete();
+                        } else if (deletingId) {
+                          handleDeleteIntervention(deletingId);
+                        }
+                      }}
+                      disabled={isDeleting}
+                      className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-all duration-300 
+                        disabled:opacity-50 flex items-center gap-2"
+                    >
+                      {isDeleting ? (
+                        <>
+                          <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></span>
+                          Deleting...
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+                        {/* Guidelines Section */}
+                        <div className="bg-white/25 backdrop-blur-md rounded-lg p-4 flex items-start space-x-3 border border-white/20">
+              <AlertCircle className="h-5 w-5 text-[#103D5E] mt-0.5 flex-shrink-0" />
+              <div>
+                <h3 className="font-medium text-[#103D5E]">Upload Guidelines</h3>
+                <ul className="mt-2 text-sm text-[#103D5E]/70 list-disc list-inside space-y-1">
+                  <li>CSV files should contain the following required columns: Client Name, Emissions Abated, Delivery Date, Intervention ID, Modality, Geography, Additionality, Causality, Status</li>
+                  <li>Optional columns: Low Carbon Fuel, Feedstock, Certification Scheme (if missing, defaults to "n/a")</li>
+                  <li>Dates can be in various formats (YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY)</li>
+                  <li>Emissions values should be numeric (commas and units will be automatically handled)</li>
+                  <li>Files can use different delimiters (comma, semicolon, or tab)</li>
+                  <li>Column headers are case-insensitive and can contain partial matches</li>
+                  <li>Invalid rows will be skipped and can be reviewed in the skipped rows report</li>
+                  <li>Interventions with active claims cannot be deleted</li>
+                </ul>
+              </div>
+            </div>
+
+            {/* Uploaded Files List */}
+            {files.length > 0 && (
+              <div className="mt-8">
+                <h2 className="text-lg font-semibold text-[#103D5E] mb-4">Uploaded Files</h2>
+                <div className="space-y-3">
+                  {files.map((file, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between bg-white/25 backdrop-blur-md p-4 rounded-lg border border-white/20
+                        hover:bg-white/30 transition-colors"
+                    >
+                      <div className="flex items-center space-x-3">
+                        <FileText className="h-5 w-5 text-[#103D5E]" />
+                        <div>
+                          <p className="font-medium text-[#103D5E]">{file.name}</p>
+                          <p className="text-sm text-[#103D5E]/60">
+                            {(file.size / 1024 / 1024).toFixed(2)} MB
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setFiles(files.filter((_, i) => i !== index))}
+                        className="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-white/20 transition-colors"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -689,7 +1035,12 @@ const AdminUpload = () => {
             {/* Processed Data Summary */}
             {processedData.length > 0 && (
               <div className="bg-white/25 backdrop-blur-md rounded-lg p-6 border border-white/20">
-                <h2 className="text-lg font-semibold text-[#103D5E] mb-4">Processed Data Summary</h2>
+                <h2 className="text-lg font-semibold text-[#103D5E] mb-4 flex items-center justify-between">
+                  <span>Processed Data Summary</span>
+                  <span className="text-sm font-normal text-[#103D5E]/70">
+                    Total Records: {processedData.length}
+                  </span>
+                </h2>
                 <div className="space-y-4">
                   {Object.entries(
                     processedData.reduce((acc, record) => {
@@ -709,9 +1060,13 @@ const AdminUpload = () => {
                       acc[record.clientName].modalityBreakdown[record.modality] += record.emissionsAbated;
 
                       return acc;
-                    }, {} as Record<string, { totalEmissions: number; interventions: number; modalityBreakdown: Record<string, number> }>)
+                    }, {} as Record<string, { 
+                      totalEmissions: number; 
+                      interventions: number; 
+                      modalityBreakdown: Record<string, number> 
+                    }>)
                   ).map(([client, data]) => (
-                    <div key={client} className="bg-white/20 p-4 rounded-lg">
+                    <div key={client} className="bg-white/20 p-4 rounded-lg hover:bg-white/30 transition-colors">
                       <h3 className="font-medium text-[#103D5E] flex items-center justify-between">
                         <span>{client}</span>
                         <span className="text-sm text-[#103D5E]/70">
@@ -744,54 +1099,6 @@ const AdminUpload = () => {
                 </div>
               </div>
             )}
-
-            {/* Uploaded Files List */}
-            {files.length > 0 && (
-              <div className="mt-8">
-                <h2 className="text-lg font-semibold text-[#103D5E] mb-4">Uploaded Files</h2>
-                <div className="space-y-3">
-                  {files.map((file, index) => (
-                    <div
-                      key={index}
-                      className="flex items-center justify-between bg-white/25 backdrop-blur-md p-4 rounded-lg border border-white/20"
-                    >
-                      <div className="flex items-center space-x-3">
-                        <FileText className="h-5 w-5 text-[#103D5E]" />
-                        <div>
-                          <p className="font-medium text-[#103D5E]">{file.name}</p>
-                          <p className="text-sm text-[#103D5E]/60">
-                            {(file.size / 1024 / 1024).toFixed(2)} MB
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setFiles(files.filter((_, i) => i !== index))}
-                        className="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-white/20 transition-colors"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Guidelines Section */}
-            <div className="bg-white/25 backdrop-blur-md rounded-lg p-4 flex items-start space-x-3 border border-white/20">
-              <AlertCircle className="h-5 w-5 text-[#103D5E] mt-0.5 flex-shrink-0" />
-              <div>
-                <h3 className="font-medium text-[#103D5E]">Upload Guidelines</h3>
-                <ul className="mt-2 text-sm text-[#103D5E]/70 list-disc list-inside space-y-1">
-                  <li>CSV files should contain the following required columns: Client Name, Emissions Abated, Delivery Date, Intervention ID, Modality, Geography, Additionality, Causality, Status</li>
-                  <li>Optional columns: Low Carbon Fuel, Feedstock, Certification Scheme (if missing, defaults to "n/a")</li>
-                  <li>Dates can be in various formats (YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY)</li>
-                  <li>Emissions values should be numeric (commas and units will be automatically handled)</li>
-                  <li>Files can use different delimiters (comma, semicolon, or tab)</li>
-                  <li>Column headers are case-insensitive and can contain partial matches</li>
-                  <li>Invalid rows will be skipped and can be reviewed in the skipped rows report</li>
-                </ul>
-              </div>
-            </div>
           </div>
         </div>
       </div>

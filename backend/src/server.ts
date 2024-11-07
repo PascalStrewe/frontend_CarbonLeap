@@ -1891,6 +1891,7 @@ app.get('/api/claims/:id/preview-statement', authenticateToken, async (req: Auth
     }
   }
 });
+
 app.get('/api/domains/available', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
     const domainPartnerships = await prisma.domainPartnership.findMany({
@@ -1929,6 +1930,58 @@ app.get('/api/domains/available', authenticateToken, async (req: AuthRequest, re
     return res.status(200).json(availableDomains);
   } catch (error) {
     console.error('Available domains API error:', error);
+    next(error);
+  }
+});
+
+// Delete intervention endpoint
+app.delete('/api/interventions/:id', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    if (!req.user?.isAdmin) {
+      res.status(403).json({
+        success: false,
+        message: 'Admin access required',
+      });
+      return;
+    }
+
+    const { id } = req.params;
+
+    // Check if intervention exists
+    const intervention = await prisma.interventionRequest.findUnique({
+      where: { id },
+      include: {
+        claims: true
+      }
+    });
+
+    if (!intervention) {
+      res.status(404).json({
+        success: false,
+        message: 'Intervention not found',
+      });
+      return;
+    }
+
+    // Check if intervention has any claims
+    if (intervention.claims.length > 0) {
+      res.status(400).json({
+        success: false,
+        message: 'Cannot delete intervention with existing claims',
+      });
+      return;
+    }
+
+    // Delete the intervention
+    await prisma.interventionRequest.delete({
+      where: { id }
+    });
+
+    res.json({
+      success: true,
+      message: 'Intervention deleted successfully',
+    });
+  } catch (error) {
     next(error);
   }
 });
