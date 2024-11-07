@@ -102,6 +102,7 @@ model InterventionRequest {
   targetTransfers Transfer[]    @relation("TargetIntervention") // Changed from transfersAsTarget
   claims          CarbonClaim[]
 
+  @@unique([clientName, date, modality, geography, amount, deliveryTicketNumber], name: "unique_intervention_composite")
   @@index([status])
   @@index([clientName])
 }

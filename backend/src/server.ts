@@ -1538,15 +1538,160 @@ app.post(
   authenticateToken,
   upload.single('file'),
   async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      if (!req.user?.isAdmin) {
-        res.status(403).json({
-          success: false,
-          message: 'Admin access required',
-        });
-        return;
+    // Define the DuplicateCheckResult interface inside the handler
+    interface DuplicateCheckResult {
+      isDuplicate: boolean;
+      existingIntervention?: any;
+      confidence?: number;
+    }
+
+    // Function to calculate confidence score for duplicate detection
+    const calculateDuplicateConfidence = (newIntervention: any, existingIntervention: any): number => {
+      let confidenceScore = 0;
+      let totalChecks = 0;
+
+      // Helper function for text comparison
+      const compareTexts = (text1: string | undefined, text2: string | undefined): boolean => {
+        if (!text1 || !text2) return false;
+        return text1.toLowerCase().trim() === text2.toLowerCase().trim();
+      };
+
+      // Exact matches carry more weight
+      if (compareTexts(newIntervention.clientName, existingIntervention.clientName)) {
+        confidenceScore += 25;
+      }
+      totalChecks += 25;
+
+      if (compareTexts(newIntervention.modality, existingIntervention.modality)) {
+        confidenceScore += 20;
+      }
+      totalChecks += 20;
+
+      if (compareTexts(newIntervention.geography, existingIntervention.geography)) {
+        confidenceScore += 15;
+      }
+      totalChecks += 15;
+
+      // Check numerical values with small variance allowance
+      const checkNumericalValue = (val1: number | string, val2: number | string, tolerance: number = 0.01): number => {
+        const num1 = typeof val1 === 'string' ? parseFloat(val1) : val1;
+        const num2 = typeof val2 === 'string' ? parseFloat(val2) : val2;
+        if (isNaN(num1) || isNaN(num2)) return 0;
+
+        const percentDiff = Math.abs(num1 - num2) / num2;
+        if (percentDiff <= tolerance) return 1;
+        if (percentDiff <= tolerance * 5) return 0.5;
+        return 0;
+      };
+
+      // Check amounts
+      const amountScore = checkNumericalValue(
+        newIntervention.amount || newIntervention.emissionsAbated,
+        existingIntervention.amount || existingIntervention.emissionsAbated
+      );
+      confidenceScore += amountScore * 20;
+      totalChecks += 20;
+
+      // Date comparison
+      const dateDiff = Math.abs(
+        new Date(newIntervention.date).getTime() -
+        new Date(existingIntervention.date).getTime()
+      );
+      const daysDiff = dateDiff / (1000 * 60 * 60 * 24);
+      if (daysDiff <= 1) {
+        confidenceScore += 20;
+      } else if (daysDiff <= 2) {
+        confidenceScore += 10;
+      }
+      totalChecks += 20;
+
+      // Additional matching factors if available
+      if (newIntervention.deliveryTicketNumber && existingIntervention.deliveryTicketNumber) {
+        if (compareTexts(newIntervention.deliveryTicketNumber, existingIntervention.deliveryTicketNumber)) {
+          confidenceScore += 10;
+        }
+        totalChecks += 10;
       }
 
+      return (confidenceScore / totalChecks) * 100;
+    };
+
+    // Function to check for potential duplicates with fuzzy matching
+    const checkForDuplicate = async (intervention: any, prisma: PrismaClient): Promise<DuplicateCheckResult> => {
+      // Create a date range of ±1 day to catch slightly misaligned dates
+      const dateToCheck = new Date(intervention.date);
+      const startDate = new Date(dateToCheck);
+      startDate.setDate(startDate.getDate() - 1);
+      const endDate = new Date(dateToCheck);
+      endDate.setDate(endDate.getDate() + 1);
+
+      // Check for existing interventions with similar characteristics
+      const existingIntervention = await prisma.interventionRequest.findFirst({
+        where: {
+          AND: [
+            {
+              clientName: {
+                equals: intervention.clientName,
+                mode: 'insensitive'
+              }
+            },
+            {
+              date: {
+                gte: startDate,
+                lte: endDate
+              }
+            },
+            {
+              modality: {
+                equals: intervention.modality,
+                mode: 'insensitive'
+              }
+            },
+            {
+              geography: {
+                equals: intervention.geography,
+                mode: 'insensitive'
+              }
+            },
+            {
+              OR: [
+                {
+                  amount: {
+                    gte: parseFloat(intervention.amount) * 0.95, // Allow 5% variance
+                    lte: parseFloat(intervention.amount) * 1.05
+                  }
+                },
+                {
+                  emissionsAbated: {
+                    gte: parseFloat(intervention.emissionsAbated) * 0.95,
+                    lte: parseFloat(intervention.emissionsAbated) * 1.05
+                  }
+                }
+              ]
+            },
+            // Only include delivery ticket check if both have it
+            intervention.deliveryTicketNumber && {
+              deliveryTicketNumber: {
+                equals: intervention.deliveryTicketNumber,
+                mode: 'insensitive'
+              }
+            }
+          ].filter(Boolean) // Remove undefined conditions
+        }
+      });
+
+      if (existingIntervention) {
+        return {
+          isDuplicate: true,
+          existingIntervention,
+          confidence: calculateDuplicateConfidence(intervention, existingIntervention)
+        };
+      }
+
+      return { isDuplicate: false };
+    };
+
+    try {
       if (!req.file) {
         res.status(400).json({
           success: false,
@@ -1567,7 +1712,7 @@ app.post(
       console.log('Processing file upload for domainId:', domainId);
 
       // Process CSV file
-      const records: Array<{[key: string]: string}> = [];
+      const records: Array<{ [key: string]: string }> = [];
       const parser = csvParse({
         columns: true,
         skip_empty_lines: true,
@@ -1579,8 +1724,10 @@ app.post(
         fromLine: 1 // Start from first line
       });
 
-      // Add record validation
       let currentLine = 1;
+      const skippedRows: Array<{ row: number; reason: string; content: string }> = [];
+      const createdInterventionsCount = 0;
+
       parser.on('readable', () => {
         let record;
         while ((record = parser.read())) {
@@ -1588,6 +1735,11 @@ app.post(
           // Validate record has required fields
           if (!record['INTERVENTION ID'] || !record['DELIVERY DATE']) {
             console.warn(`Skipping line ${currentLine} due to missing required fields`);
+            skippedRows.push({
+              row: currentLine,
+              reason: 'Missing required fields: INTERVENTION ID or DELIVERY DATE',
+              content: JSON.stringify(record)
+            });
             continue;
           }
           records.push(record);
@@ -1599,19 +1751,8 @@ app.post(
       });
 
       const processPromise = new Promise<void>((resolve, reject) => {
-        parser.on('readable', () => {
-          let record;
-          while ((record = parser.read())) {
-            records.push(record);
-          }
-        });
-        
-        parser.on('error', (error) => {
-          console.error('CSV parsing error:', error);
-          reject(error);
-        });
-        
         parser.on('end', () => resolve());
+        parser.on('error', (error) => reject(error));
       });
 
       // Create readable stream from buffer
@@ -1621,7 +1762,7 @@ app.post(
       bufferStream.pipe(parser);
 
       await processPromise;
-      
+
       console.log('Parsed records:', records.length);
       if (records.length > 0) {
         console.log('Sample record:', JSON.stringify(records[0], null, 2));
@@ -1641,38 +1782,34 @@ app.post(
         }
       };
 
-      // Validate and transform records
-      const interventions = records.map((record) => {
+      // Helper functions to safely parse numbers and booleans
+      const parseNumber = (value: any): number => {
+        if (value === null || value === undefined || value === '') return 0;
+        const cleanValue = value.toString()
+          .replace(',', '.')
+          .replace(/[^\d.-]/g, '');
+        const parsed = parseFloat(cleanValue);
+        return isNaN(parsed) ? 0 : parsed;
+      };
+
+      const parseBoolean = (value: any): boolean => {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'string') {
+          return /^(yes|true|1|on)$/i.test(value.trim());
+        }
+        return false;
+      };
+
+      // Initialize skippedRows array
+      const skippedRowsDetails: Array<{ row: number; reason: string; content: string }> = [];
+      let createdCount = 0;
+
+      // Loop through each record and process individually
+      for (const [index, record] of records.entries()) {
+        currentLine = index + 2; // Assuming header is line 1
         try {
           const interventionId = record['INTERVENTION ID'];
-          if (!interventionId) {
-            throw new Error('INTERVENTION ID is required');
-          }
-
           const dateStr = record['DELIVERY DATE'];
-          if (!dateStr) {
-            throw new Error('DELIVERY DATE is required');
-          }
-
-          // Helper function to safely parse numbers
-          const parseNumber = (value: any): number => {
-            if (value === null || value === undefined || value === '') return 0;
-            // Convert to string, replace comma with period, and remove any non-numeric characters except period
-            const cleanValue = value.toString()
-              .replace(',', '.')
-              .replace(/[^\d.-]/g, '');
-            const parsed = parseFloat(cleanValue);
-            return isNaN(parsed) ? 0 : parsed;
-          };
-
-          // Helper function to parse boolean values
-          const parseBoolean = (value: any): boolean => {
-            if (typeof value === 'boolean') return value;
-            if (typeof value === 'string') {
-              return /^(yes|true|1|on)$/i.test(value.trim());
-            }
-            return false;
-          };
 
           const interventionData = {
             userId: req.user!.id,
@@ -1709,12 +1846,11 @@ app.post(
             ghgEmissionSaving: record['GHG_EMISSION_SAVING']?.toString() || '0',
             vintage: parseInt(record['VINTAGE']?.toString().replace(',', '.')) || new Date().getFullYear(),
             thirdPartyVerification: record['THIRD_PARTY_VERIFICATION']?.toString() || 'Pending',
-            // Convert numeric fields to proper floats
-            totalAmount: parseNumber(record['EMISSIONS ABATED']), // Same as emissionsAbated
-            remainingAmount: parseNumber(record['EMISSIONS ABATED']) // Initially same as emissionsAbated
+            totalAmount: parseNumber(record['EMISSIONS ABATED']),
+            remainingAmount: parseNumber(record['EMISSIONS ABATED'])
           };
 
-          // Additional validation to ensure all required fields are present and correctly typed
+          // Additional validation
           if (isNaN(interventionData.emissionsAbated)) {
             console.warn(`Invalid emissions abated value for intervention ${interventionId}, defaulting to 0`);
             interventionData.emissionsAbated = 0;
@@ -1724,32 +1860,54 @@ app.post(
             throw new Error('Intervention ID is required');
           }
 
-          return interventionData;
-        } catch (err) {
-          console.error('Error processing record:', record);
-          throw err;
-        }
-      });
+          // Perform duplicate check
+          const duplicateCheck = await checkForDuplicate(interventionData, prisma);
+          if (duplicateCheck.isDuplicate) {
+            console.warn('Potential duplicate intervention detected:', {
+              new: interventionData,
+              existing: duplicateCheck.existingIntervention,
+              confidence: duplicateCheck.confidence
+            });
 
-      console.log('Processed interventions:', interventions.length);
-      
-      try {
-        const createdInterventions = await prisma.interventionRequest.createMany({
-          data: interventions,
-          skipDuplicates: true,
-        });
-        
-        console.log('Successfully created interventions:', createdInterventions.count);
-        
-        res.json({
-          success: true,
-          message: `Successfully created ${createdInterventions.count} interventions`,
-          data: createdInterventions,
-        });
-      } catch (err) {
-        console.error('Database error:', err);
-        throw err;
+            // If high confidence of duplicate (>80%), skip this record
+            if (duplicateCheck.confidence && duplicateCheck.confidence > 80) {
+              skippedRowsDetails.push({
+                row: currentLine,
+                reason: `Potential duplicate of existing intervention ${duplicateCheck.existingIntervention.interventionId} (${duplicateCheck.confidence.toFixed(1)}% confidence match)`,
+                content: JSON.stringify(interventionData)
+              });
+              continue; // Skip this record
+            }
+
+            // For medium confidence (50-80%), add a warning but still process
+            if (duplicateCheck.confidence && duplicateCheck.confidence > 50) {
+              console.warn(`Processing potential duplicate with ${duplicateCheck.confidence.toFixed(1)}% confidence match`);
+            }
+          }
+
+          // Create the intervention
+          await prisma.interventionRequest.create({
+            data: interventionData
+          });
+
+          createdCount++;
+        } catch (err) {
+          console.error(`Error processing record at line ${currentLine}:`, err);
+          skippedRowsDetails.push({
+            row: currentLine,
+            reason: `Error processing record: ${err instanceof Error ? err.message : 'Unknown error'}`,
+            content: JSON.stringify(record)
+          });
+        }
       }
+
+      // Respond with the results
+      res.json({
+        success: true,
+        message: `Successfully created ${createdCount} interventions.`,
+        createdCount,
+        skippedRows: skippedRowsDetails
+      });
     } catch (error) {
       console.error('Error processing file upload:', error);
       if (error instanceof Error) {
@@ -1765,6 +1923,7 @@ app.post(
     }
   }
 );
+
 
 // Chat with data route
 app.post(
@@ -1935,7 +2094,7 @@ app.get('/api/domains/available', authenticateToken, async (req: AuthRequest, re
 });
 
 // Delete intervention endpoint
-app.delete('/api/interventions/:id', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+app.delete('/api/interventions/:interventionId', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
     if (!req.user?.isAdmin) {
       res.status(403).json({
@@ -1945,11 +2104,11 @@ app.delete('/api/interventions/:id', authenticateToken, async (req: AuthRequest,
       return;
     }
 
-    const { id } = req.params;
+    const { interventionId } = req.params;
 
     // Check if intervention exists
     const intervention = await prisma.interventionRequest.findUnique({
-      where: { id },
+      where: { interventionId },
       include: {
         claims: true
       }
@@ -1974,7 +2133,7 @@ app.delete('/api/interventions/:id', authenticateToken, async (req: AuthRequest,
 
     // Delete the intervention
     await prisma.interventionRequest.delete({
-      where: { id }
+      where: { interventionId }
     });
 
     res.json({
@@ -1985,6 +2144,7 @@ app.delete('/api/interventions/:id', authenticateToken, async (req: AuthRequest,
     next(error);
   }
 });
+
 
 app.get('/api/validate-token', authenticateToken, async (req: AuthRequest, res: Response) => {
   res.json({ user: req.user });

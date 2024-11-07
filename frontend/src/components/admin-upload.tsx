@@ -119,6 +119,8 @@ const AdminUpload = () => {
   const [showTooltip, setShowTooltip] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [itemsPerPage] = useState(10);
+  const [isLoading, setIsLoading] = useState(true);
+
 
   // Effect hooks
   useEffect(() => {
@@ -126,22 +128,41 @@ const AdminUpload = () => {
       navigate('/dashboard');
       return;
     }
-
-    const fetchDomains = async () => {
+  
+    const initialize = async () => {
       try {
-        const response = await axios.get('/api/domains', {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('token')}`
-          }
-        });
-        setDomains(response.data.data);
+        // Fetch both domains and interventions in parallel
+        const [domainsResponse, interventionsResponse] = await Promise.all([
+          axios.get('/api/domains', {
+            headers: {
+              Authorization: `Bearer ${localStorage.getItem('token')}`
+            }
+          }),
+          axios.get('/api/intervention-requests', {
+            headers: {
+              Authorization: `Bearer ${localStorage.getItem('token')}`
+            }
+          })
+        ]);
+
+        setDomains(domainsResponse.data.data);
+        
+        // Transform the interventions data to match component's data structure
+        const interventions = Array.isArray(interventionsResponse.data) 
+          ? interventionsResponse.data 
+          : [];
+        
+        setProcessedData(interventions);
+        setPreview(interventions.slice(0, 5));
       } catch (err) {
-        console.error('Failed to fetch domains:', err);
-        setError('Failed to fetch domains');
+        console.error('Failed to fetch initial data:', err);
+        setError('Failed to fetch data. Please refresh the page.');
+      } finally {
+        setIsLoading(false);
       }
     };
 
-    fetchDomains();
+    initialize();
   }, [user, navigate]);
 
   useEffect(() => {
@@ -151,6 +172,27 @@ const AdminUpload = () => {
     );
     setFilteredDomains(filtered);
   }, [searchTerm, domains]);
+
+  const fetchInterventions = async () => {
+    try {
+      setIsLoading(true);
+      const response = await axios.get('/api/intervention-requests', {
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      
+      if (response.data.success) {
+        setProcessedData(response.data.interventions);
+        setPreview(response.data.interventions.slice(0, 5));
+      }
+    } catch (err) {
+      console.error('Error fetching interventions:', err);
+      setError('Failed to load existing interventions');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Sort function for data
   const sortData = useCallback((data: InterventionData[]) => {
@@ -400,29 +442,30 @@ const AdminUpload = () => {
   const processFile = useCallback(async (file: File) => {
     if (!selectedDomain) {
       setError('Please select a domain first.');
-      return;
+      return false; // Return false to indicate processing failed
     }
+
+    // Reset states at the start of processing
+    setError('');
+    setSuccess('');
+    setPreview([]);
 
     // Validate file size (e.g., max 10MB)
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
     if (file.size > MAX_FILE_SIZE) {
       setError(`File size exceeds maximum limit of ${MAX_FILE_SIZE / 1024 / 1024}MB`);
-      return;
+      return false;
     }
 
     // Validate file type
     if (!file.name.toLowerCase().endsWith('.csv')) {
       setError('Please upload a CSV file only');
-      return;
+      return false;
     }
 
     setProcessing(true);
-    setError('');
-    setSuccess('');
-    setPreview([]);
     
     const reader = new FileReader();
-    setError('');
     
     reader.onload = async (e) => {
       try {
@@ -444,26 +487,42 @@ const AdminUpload = () => {
           });
 
           if (response.data.success) {
-            const uploadedCount = response.data.uploadedCount || 'multiple';
-            const skippedCount = response.data.skippedCount || 0;
-            setSuccess(
-              `Successfully uploaded ${uploadedCount} interventions for ${selectedDomain.companyName}. ` +
-              (skippedCount > 0 ? `${skippedCount} rows were skipped - check the skipped rows report for details.` : '')
-            );
-            // Ensure refresh is complete before showing success
-            await refreshInterventions();
+            // Check if any records were actually created
+            const uploadedCount = response.data.createdCount || 0;
+            const skippedCount = response.data.skippedRows?.length || 0;
+
+            if (uploadedCount === 0 && skippedCount > 0) {
+              setError(`No new records were created. ${skippedCount} rows were skipped - check the skipped rows report for details.`);
+            } else if (uploadedCount > 0) {
+              setSuccess(
+                `Successfully uploaded ${uploadedCount} interventions for ${selectedDomain.companyName}. ` +
+                (skippedCount > 0 ? `${skippedCount} rows were skipped - check the skipped rows report for details.` : '')
+              );
+            }
             
+            // Clear the files array
             setFiles([]);
-            setProcessedData([]);
-            setPreview([]);
+            
+            // Fetch the latest data
+            try {
+              const response = await axios.get('/api/intervention-requests', {
+                headers: {
+                  Authorization: `Bearer ${localStorage.getItem('token')}`
+                }
+              });
+              
+              if (response.data.success) {
+                setProcessedData(response.data.interventions);
+                setPreview(response.data.interventions.slice(0, 5));
+              }
+            } catch (err) {
+              console.error('Error fetching updated interventions:', err);
+            }
             
             // Ensure data is refreshed everywhere
-            await refreshInterventions();
-            
-            // Add a second refresh after a delay to ensure all data is updated
-            setTimeout(async () => {
+            if (refreshInterventions) {
               await refreshInterventions();
-            }, 2000);
+            }
           }
         } catch (err) {
           if (axios.isAxiosError(err) && err.response) {
@@ -500,10 +559,6 @@ const AdminUpload = () => {
             }
 
             setError(errorMessage);
-
-            if (import.meta.env.DEV) {
-              console.error('Full error details:', err.response.data);
-            }
           } else {
             console.error('Upload error:', err);
             setError('Failed to upload file');
@@ -523,6 +578,7 @@ const AdminUpload = () => {
     };
 
     reader.readAsText(file);
+    return true; // Return true to indicate processing started successfully
   }, [selectedDomain, refreshInterventions, parseCSV]);
 
   // Function to parse various date formats into ISO format
@@ -572,9 +628,15 @@ const AdminUpload = () => {
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []);
-    setFiles(prev => [...prev, ...selectedFiles]);
     if (selectedFiles.length > 0) {
-      processFile(selectedFiles[0]);
+      // Only set files if processing starts successfully
+      processFile(selectedFiles[0]).then(success => {
+        if (success) {
+          setFiles(prev => [...prev, ...selectedFiles]);
+        }
+        // Reset the input value to allow the same file to be selected again
+        e.target.value = '';
+      });
     }
   }, [processFile]);
 
@@ -620,8 +682,12 @@ const AdminUpload = () => {
       return;
     }
 
-    setFiles(prev => [...prev, ...csvFiles]);
-    processFile(csvFiles[0]);
+    // Only set files if processing starts successfully
+    processFile(csvFiles[0]).then(success => {
+      if (success) {
+        setFiles(prev => [...prev, ...csvFiles]);
+      }
+    });
   }, [processFile]);
 
   return (
@@ -797,139 +863,148 @@ const AdminUpload = () => {
             )}
 
             {/* Data Preview with improved table */}
-            {preview.length > 0 && (
-              <div className="bg-white/25 backdrop-blur-md rounded-lg p-6 border border-white/20">
-                <h2 className="text-lg font-semibold text-[#103D5E] mb-4 flex items-center gap-2">
-                  <Eye className="h-5 w-5" />
-                  Data Preview
-                </h2>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-white/20">
-                        <th className="px-4 py-2 text-left">
-                          <div className="flex items-center space-x-2">
-                            <input
-                              type="checkbox"
-                              checked={selectedInterventions.length === preview.length}
-                              onChange={handleSelectAll}
-                              className="rounded border-white/20"
-                            />
-                          </div>
-                        </th>
-                        {/* Column headers with sort indicators */}
-                        {['Client Name', 'Intervention ID', 'Date', 'Emissions Abated', 'Modality', 'Geography', 'Status', 'Actions'].map((header) => (
-                          <th 
-                            key={header}
-                            className="px-4 py-2 text-left cursor-pointer hover:bg-white/10 transition-colors"
-                            onClick={() => handleSort(header.toLowerCase().replace(' ', '') as keyof InterventionData)}
-                          >
-                            <div className="flex items-center space-x-1">
-                              <span>{header}</span>
-                              {sortConfig.key === header.toLowerCase().replace(' ', '') && (
-                                sortConfig.direction === 'asc' ? 
-                                  <ChevronUp className="h-4 w-4" /> : 
-                                  <ChevronDown className="h-4 w-4" />
-                              )}
+            <div className="bg-white/25 backdrop-blur-md rounded-lg p-6 border border-white/20">
+              <h2 className="text-lg font-semibold text-[#103D5E] mb-4 flex items-center gap-2">
+                <Eye className="h-5 w-5" />
+                Uploaded Interventions
+              </h2>
+              {isLoading ? (
+                <div className="flex justify-center items-center h-32">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#103D5E]"></div>
+                </div>
+              ) : processedData.length === 0 ? (
+                <div className="text-center py-8 text-[#103D5E]/70">
+                  No interventions found. Upload a CSV file to get started.
+                </div>
+              ) : (
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-white/20">
+                          <th className="px-4 py-2 text-left">
+                            <div className="flex items-center space-x-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedInterventions.length === processedData.length}
+                                onChange={handleSelectAll}
+                                className="rounded border-white/20"
+                              />
                             </div>
                           </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {paginatedData().map((row, index) => (
-                        <tr 
-                          key={row.interventionId}
-                          className={`border-b border-white/10 hover:bg-white/10 transition-colors ${
-                            selectedInterventions.includes(row.interventionId) ? 'bg-white/20' : ''
-                          }`}
-                        >
-                          <td className="px-4 py-2">
-                            <input
-                              type="checkbox"
-                              checked={selectedInterventions.includes(row.interventionId)}
-                              onChange={() => handleSelectIntervention(row.interventionId, row.hasClaims || false)}
-                              disabled={row.hasClaims}
-                              className="rounded border-white/20"
-                            />
-                          </td>
-                          <td className="px-4 py-2">{row.clientName}</td>
-                          <td className="px-4 py-2">{row.interventionId}</td>
-                          <td className="px-4 py-2">{row.date}</td>
-                          <td className="px-4 py-2">{row.emissionsAbated.toFixed(1)} tCO2e</td>
-                          <td className="px-4 py-2">{row.modality}</td>
-                          <td className="px-4 py-2">{row.geography}</td>
-                          <td className="px-4 py-2">
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                              row.status === 'Verified' 
-                                ? 'bg-green-100 text-green-800' 
-                                : 'bg-yellow-100 text-yellow-800'
-                            }`}>
-                              {row.status}
-                            </span>
-                          </td>
-                          <td className="px-4 py-2">
-                            <div className="flex items-center space-x-2">
-                              <button
-                                onClick={() => {
-                                  if (!row.hasClaims) {
-                                    setDeletingId(row.interventionId);
-                                    setShowDeleteConfirm(true);
-                                  }
-                                }}
-                                disabled={row.hasClaims}
-                                className={`p-1 rounded-full transition-colors ${
-                                  row.hasClaims 
-                                    ? 'text-gray-400 cursor-not-allowed' 
-                                    : 'text-red-500 hover:bg-red-50'
-                                }`}
-                                onMouseEnter={() => row.hasClaims && setShowTooltip(row.interventionId)}
-                                onMouseLeave={() => setShowTooltip(null)}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                              {showTooltip === row.interventionId && row.hasClaims && (
-                                <div className="absolute bg-black/75 text-white px-2 py-1 rounded text-xs">
-                                  Cannot delete: Has active claims
-                                </div>
-                              )}
-                            </div>
-                          </td>
+                          {['Client Name', 'Intervention ID', 'Date', 'Emissions Abated', 'Modality', 'Geography', 'Status', 'Actions'].map((header) => (
+                            <th 
+                              key={header}
+                              className="px-4 py-2 text-left cursor-pointer hover:bg-white/10 transition-colors"
+                              onClick={() => handleSort(header.toLowerCase().replace(' ', '') as keyof InterventionData)}
+                            >
+                              <div className="flex items-center space-x-1">
+                                <span>{header}</span>
+                                {sortConfig.key === header.toLowerCase().replace(' ', '') && (
+                                  sortConfig.direction === 'asc' ? 
+                                    <ChevronUp className="h-4 w-4" /> : 
+                                    <ChevronDown className="h-4 w-4" />
+                                )}
+                              </div>
+                            </th>
+                          ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Pagination controls */}
-                {totalPages > 1 && (
-                  <div className="mt-4 flex justify-between items-center">
-                    <div className="text-sm text-[#103D5E]/70">
-                      Showing {((page - 1) * itemsPerPage) + 1} to {Math.min(page * itemsPerPage, processedData.length)} of {processedData.length} entries
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <button
-                        onClick={() => setPage(p => Math.max(1, p - 1))}
-                        disabled={page === 1}
-                        className="px-3 py-1 rounded bg-white/25 text-[#103D5E] disabled:opacity-50"
-                      >
-                        Previous
-                      </button>
-                      <span className="text-[#103D5E]">
-                        Page {page} of {totalPages}
-                      </span>
-                      <button
-                        onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                        disabled={page === totalPages}
-                        className="px-3 py-1 rounded bg-white/25 text-[#103D5E] disabled:opacity-50"
-                      >
-                        Next
-                      </button>
-                    </div>
+                      </thead>
+                      <tbody>
+                        {paginatedData().map((row) => (
+                          <tr 
+                            key={row.interventionId}
+                            className={`border-b border-white/10 hover:bg-white/10 transition-colors ${
+                              selectedInterventions.includes(row.interventionId) ? 'bg-white/20' : ''
+                            }`}
+                          >
+                            <td className="px-4 py-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedInterventions.includes(row.interventionId)}
+                                onChange={() => handleSelectIntervention(row.interventionId, row.hasClaims || false)}
+                                disabled={row.hasClaims}
+                                className="rounded border-white/20"
+                              />
+                            </td>
+                            <td className="px-4 py-2">{row.clientName}</td>
+                            <td className="px-4 py-2">{row.interventionId}</td>
+                            <td className="px-4 py-2">{new Date(row.date).toLocaleDateString()}</td>
+                            <td className="px-4 py-2">{row.emissionsAbated.toFixed(1)} tCO2e</td>
+                            <td className="px-4 py-2">{row.modality}</td>
+                            <td className="px-4 py-2">{row.geography}</td>
+                            <td className="px-4 py-2">
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                row.status === 'Verified' 
+                                  ? 'bg-green-100 text-green-800' 
+                                  : 'bg-yellow-100 text-yellow-800'
+                              }`}>
+                                {row.status}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2">
+                              <div className="flex items-center space-x-2">
+                                <button
+                                  onClick={() => {
+                                    if (!row.hasClaims) {
+                                      setDeletingId(row.interventionId);
+                                      setShowDeleteConfirm(true);
+                                    }
+                                  }}
+                                  disabled={row.hasClaims}
+                                  className={`p-1 rounded-full transition-colors ${
+                                    row.hasClaims 
+                                      ? 'text-gray-400 cursor-not-allowed' 
+                                      : 'text-red-500 hover:bg-red-50'
+                                  }`}
+                                  onMouseEnter={() => row.hasClaims && setShowTooltip(row.interventionId)}
+                                  onMouseLeave={() => setShowTooltip(null)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                                {showTooltip === row.interventionId && row.hasClaims && (
+                                  <div className="absolute bg-black/75 text-white px-2 py-1 rounded text-xs">
+                                    Cannot delete: Has active claims
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                )}
-              </div>
-            )}
+
+                  {/* Pagination controls */}
+                  {totalPages > 1 && (
+                    <div className="mt-4 flex justify-between items-center">
+                      <div className="text-sm text-[#103D5E]/70">
+                        Showing {((page - 1) * itemsPerPage) + 1} to {Math.min(page * itemsPerPage, processedData.length)} of {processedData.length} entries
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <button
+                          onClick={() => setPage(p => Math.max(1, p - 1))}
+                          disabled={page === 1}
+                          className="px-3 py-1 rounded bg-white/25 text-[#103D5E] disabled:opacity-50"
+                        >
+                          Previous
+                        </button>
+                        <span className="text-[#103D5E]">
+                          Page {page} of {totalPages}
+                        </span>
+                        <button
+                          onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                          disabled={page === totalPages}
+                          className="px-3 py-1 rounded bg-white/25 text-[#103D5E] disabled:opacity-50"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
 
             {/* Delete Confirmation Modal */}
             {showDeleteConfirm && (
@@ -982,8 +1057,8 @@ const AdminUpload = () => {
               </div>
             )}
 
-                        {/* Guidelines Section */}
-                        <div className="bg-white/25 backdrop-blur-md rounded-lg p-4 flex items-start space-x-3 border border-white/20">
+            {/* Guidelines Section */}
+            <div className="bg-white/25 backdrop-blur-md rounded-lg p-4 flex items-start space-x-3 border border-white/20">
               <AlertCircle className="h-5 w-5 text-[#103D5E] mt-0.5 flex-shrink-0" />
               <div>
                 <h3 className="font-medium text-[#103D5E]">Upload Guidelines</h3>
