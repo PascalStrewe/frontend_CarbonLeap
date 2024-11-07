@@ -8,6 +8,17 @@ import React, {
 } from 'react';
 import axios from 'axios';
 
+
+// Define the shape of a claim
+export interface Claim {
+  id: string;
+  amount: number;
+  status: string;
+  claimingDomainId: number;
+  // Add other relevant fields as per your backend schema
+}
+
+
 // Define the shape of your intervention data
 export interface InterventionData {
   id?: string;
@@ -38,6 +49,11 @@ export interface InterventionData {
   otherCertificationScheme?: string;
   vesselType?: string;
   remainingAmount?: number;
+  claims?: Claim[]; // Added claims property
+  isTransferReceived?: boolean;
+  isTransferSent?: boolean;
+  totalAmount?: number;
+  activeClaims?: number;
 }
 
 // Define the context type
@@ -97,6 +113,8 @@ export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   // Memoized function to fetch interventions
+  // Inside InterventionProvider, update the fetchInterventions function:
+
   const fetchInterventions = useCallback(async () => {
     const token = localStorage.getItem('token');
     if (!token) {
@@ -117,7 +135,7 @@ export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
     
     try {
       console.log('Fetching interventions...');
-      const response = await axios.get('http://localhost:3001/api/intervention-requests', {
+      const response = await axios.get('/api/intervention-requests', {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -129,15 +147,13 @@ export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
       const processedData: InterventionData[] = rawData.map((intervention: any) => {
         console.log('Processing intervention:', {
           id: intervention.interventionId,
-          raw: {
-            remainingAmount: intervention.remainingAmount,
-            emissionsAbated: intervention.emissionsAbated,
-            claims: intervention.claims,
-            status: intervention.status,
-            modality: intervention.modality
-          }
+          raw: intervention
         });
-        // Parse amounts
+
+        // Ensure claims is always an array
+        const claims = intervention.claims || [];
+        
+        // Calculate amounts
         const totalAmount = parseFloat(intervention.totalAmount?.toString() || intervention.emissionsAbated.toString());
         const remainingAmount = typeof intervention.remainingAmount === 'number' ? 
           parseFloat(intervention.remainingAmount.toString()) : 
@@ -145,52 +161,49 @@ export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
         const emissionsAmount = parseFloat(intervention.emissionsAbated.toString());
       
         // Calculate total active claims amount
-        const activeClaims = (intervention.claims || []).reduce((sum: number, claim: any) => {
+        const activeClaims = claims.reduce((sum: number, claim: any) => {
           if (claim.status === 'active') {
             return sum + parseFloat(claim.amount.toString());
           }
           return sum;
         }, 0);
       
-        // Determine if this is a transfer and its direction
+        // Get user's domain from token
+        const userDomain = token ? JSON.parse(atob(token.split('.')[1])).domain : '';
+        
+        // Determine transfer status
         const isTransferFrom = intervention.modality?.toLowerCase().includes('transfer from');
         const isTransferTo = intervention.modality?.toLowerCase().includes('transfer to');
         
-        // Get user's domain from localStorage token
-        const token = localStorage.getItem('token');
-        let userDomain = '';
-        if (token) {
-          try {
-            const payload = JSON.parse(atob(token.split('.')[1]));
-            userDomain = payload.domain;
-          } catch (e) {
-            console.error('Error parsing token:', e);
-          }
-        }
-      
-        // Determine the correct status based on transfer direction, ownership, and claims
-        let status = intervention.status;
+        // Calculate effective status and amount
+        let status = intervention.status?.toLowerCase() || '';
         let effectiveAmount = remainingAmount;
         
         if (isTransferFrom && intervention.clientName?.includes(userDomain)) {
-          // This is a received transfer for current user
-          status = intervention.status?.toLowerCase() === 'completed' ? 'verified' : intervention.status;
+          status = status === 'completed' ? 'verified' : status;
           effectiveAmount = emissionsAmount;
         } else if (isTransferTo && intervention.clientName?.includes(userDomain)) {
-          // This is a sent transfer from current user
-          // Only mark as transferred if:
-          // 1. The entire amount was transferred (remainingAmount === 0)
-          // 2. AND there are no active claims
-          status = remainingAmount === 0 && activeClaims === 0 ? 'transferred' : intervention.status;
+          status = remainingAmount === 0 && activeClaims === 0 ? 'transferred' : status;
           effectiveAmount = remainingAmount;
-        } else if (!isTransferFrom && !isTransferTo) {
-          // Original intervention
-          status = remainingAmount === 0 && activeClaims === 0 ? 'transferred' : intervention.status;
+        } else {
+          status = remainingAmount === 0 && activeClaims === 0 ? 'transferred' : status;
           effectiveAmount = remainingAmount;
         }
+
+        console.log('Processed intervention result:', {
+          id: intervention.interventionId,
+          processed: {
+            remainingAmount: effectiveAmount,
+            emissionsAbated: emissionsAmount,
+            activeClaims,
+            claims: claims.length,
+            status
+          }
+        });
       
         return {
           ...intervention,
+          claims,  // Ensure claims are included
           totalAmount,
           remainingAmount: effectiveAmount,
           emissionsAbated: emissionsAmount,
@@ -201,21 +214,9 @@ export const InterventionProvider: React.FC<{ children: React.ReactNode }> = ({
           isTransferReceived: isTransferFrom,
           isTransferSent: isTransferTo
         };
-
-        console.log('Processed intervention result:', {
-          id: intervention.interventionId,
-          processed: {
-            remainingAmount: effectiveAmount,
-            emissionsAbated: emissionsAmount,
-            activeClaims,
-            status,
-            isTransferFrom,
-            isTransferTo
-          }
-        });
       });
 
-      console.log('Processed intervention data:', processedData);
+      console.log('Final processed data:', processedData);
       setInterventionData(processedData);
 
     } catch (err: any) {

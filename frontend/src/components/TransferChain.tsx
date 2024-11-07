@@ -43,8 +43,9 @@ interface InterventionData {
 }
 
 interface TransferChainProps {
-  interventionId: string;
-}
+    interventionId: string;
+    userDomainId: number;
+  }
 
 const TransferChain: React.FC<TransferChainProps> = ({ interventionId }) => {
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -98,20 +99,40 @@ const TransferChain: React.FC<TransferChainProps> = ({ interventionId }) => {
     transfers: any[],
     startX: number = 250,
     startY: number = 0,
-    level: number = 0
+    level: number = 0,
+    parentDomainId?: number
   ): { nodes: Node[], edges: Edge[] } => {
     const nodes: Node[] = [];
     const edges: Edge[] = [];
     const spacing = { x: 250, y: 150 };
 
-    transfers.forEach((transfer, index) => {
-      // Debug log to see the transfer object structure
-      console.log('Processing transfer:', transfer);
+    // Filter transfers to only show relevant ones
+    const relevantTransfers = transfers.filter(transfer => {
+      // Show all if user is the original source
+      if (level === 0 && transfer.sourceDomain.id === userDomainId) {
+        return true;
+      }
+      
+      // Show only direct transfers to/from user's domain
+      if (parentDomainId === userDomainId) {
+        return transfer.targetDomain.id === userDomainId;
+      }
+      
+      if (transfer.sourceDomain.id === userDomainId) {
+        return true;
+      }
+      
+      if (transfer.targetDomain.id === userDomainId) {
+        return true;
+      }
+      
+      return false;
+    });
 
+    relevantTransfers.forEach((transfer, index) => {
       const nodeId = `transfer-${transfer.id}`;
-      const y = startY + (index * spacing.y) - ((transfers.length - 1) * spacing.y / 2);
+      const y = startY + (index * spacing.y) - ((relevantTransfers.length - 1) * spacing.y / 2);
 
-      // Create node
       nodes.push({
         id: nodeId,
         type: 'custom',
@@ -120,7 +141,8 @@ const TransferChain: React.FC<TransferChainProps> = ({ interventionId }) => {
           label: transfer.targetDomain?.companyName || 'Unknown Company',
           amount: transfer.amount,
           status: transfer.status,
-          interventionId: transfer.sourceIntervention?.interventionId || 'Unknown ID'
+          interventionId: transfer.sourceIntervention?.interventionId || 'Unknown ID',
+          level: transfer.targetDomain.supplyChainLevel
         },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
@@ -156,7 +178,8 @@ const TransferChain: React.FC<TransferChainProps> = ({ interventionId }) => {
           transfer.childTransfers,
           startX + spacing.x,
           y,
-          level + 1
+          level + 1,
+          transfer.targetDomain.id
         );
         nodes.push(...childResults.nodes);
         edges.push(...childResults.edges);

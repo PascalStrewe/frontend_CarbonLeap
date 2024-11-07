@@ -177,18 +177,26 @@ const CarbonClaims = () => {
       return 0;
     }
   
-    // Get existing claims at user's supply chain level
-    const existingClaimAtLevel = claims.find(
-      claim => claim.intervention.interventionId === interventionId && 
-               claim.supplyChainLevel === user?.domain?.supplyChainLevel &&
-               claim.status === 'active'
+    // Get existing claim amount at this level
+    const existingClaimAmountAtLevel = claims.reduce(
+      (sum, claim) => 
+        claim.intervention.interventionId === interventionId && 
+        claim.supplyChainLevel === user?.domain?.supplyChainLevel &&
+        claim.status === 'active' 
+          ? sum + claim.amount 
+          : sum,
+      0
     );
-
-    // If a claim already exists at this level, no more claiming is allowed
-    if (existingClaimAtLevel) {
+  
+    const emissionsAmount = typeof intervention.emissionsAbated === 'string' 
+      ? parseFloat(intervention.emissionsAbated) 
+      : intervention.emissionsAbated;
+  
+    // If we've claimed the full intervention amount at this level, no more claiming is allowed
+    if (existingClaimAmountAtLevel >= emissionsAmount) {
       return 0;
     }
-    
+  
     // Calculate total claimed across all levels
     const totalClaimed = claims.reduce(
       (sum, claim) => claim.intervention.interventionId === interventionId && 
@@ -196,8 +204,14 @@ const CarbonClaims = () => {
       0
     );
   
-    return intervention.emissionsAbated - totalClaimed;
-}, [claims, interventions, user?.domain?.supplyChainLevel]);
+    // Return the minimum of:
+    // 1. What's left to claim at this level
+    // 2. What's left to claim overall
+    return Math.min(
+      emissionsAmount - existingClaimAmountAtLevel,
+      emissionsAmount - totalClaimed
+    );
+  }, [claims, interventions, user?.domain?.supplyChainLevel]);
 
   const availableInterventions = useMemo(() => 
     interventions.filter(intervention => {
@@ -260,19 +274,39 @@ const CarbonClaims = () => {
         throw new Error('Please enter a valid amount');
       }
 
-      // Get existing claims for this intervention at user's supply chain level
-      const existingClaimAtLevel = claims.find(claim => 
-        claim.intervention.interventionId === selectedIntervention && 
-        claim.supplyChainLevel === user?.domain?.supplyChainLevel &&
-        claim.status === 'active'
+      // Validate user's supply chain level exists
+      if (!user?.domain?.supplyChainLevel) {
+        throw new Error('Could not determine your supply chain level. Please contact support.');
+      }
+
+      // Calculate existing claim amount at this level
+      const existingClaimAmountAtLevel = claims.reduce(
+        (sum, claim) => 
+          claim.intervention.interventionId === selectedIntervention && 
+          claim.supplyChainLevel === user?.domain?.supplyChainLevel &&
+          claim.status === 'active' 
+            ? sum + claim.amount 
+            : sum,
+        0
       );
 
-      if (existingClaimAtLevel) {
-        throw new Error(`A claim already exists for this intervention at your supply chain level (${user?.domain?.supplyChainLevel})`);
+      // Get intervention total amount
+      const intervention = interventions.find(i => i.interventionId === selectedIntervention);
+      if (!intervention) {
+        throw new Error('Selected intervention not found');
+      }
+
+      const emissionsAmount = typeof intervention.emissionsAbated === 'string' 
+        ? parseFloat(intervention.emissionsAbated) 
+        : intervention.emissionsAbated;
+
+      // Check if attempting to claim more than available at this level
+      if (existingClaimAmountAtLevel + parseFloat(claimAmount) > emissionsAmount) {
+        throw new Error(`Cannot claim more than available amount at your supply chain level (${(emissionsAmount - existingClaimAmountAtLevel).toFixed(2)} tCO2e)`);
       }
 
       const availableAmount = calculateAvailableAmount(selectedIntervention);
-      if (amount > availableAmount) {
+      if (parseFloat(claimAmount) > availableAmount) {
         throw new Error(`Cannot claim more than available amount (${availableAmount.toFixed(2)} tCO2e)`);
       }
 

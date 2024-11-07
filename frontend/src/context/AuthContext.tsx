@@ -1,22 +1,23 @@
-// C:/Users/PascalStrewe/Downloads/frontend_CarbonLeap/src/context/AuthContext.tsx
+// frontend/src/context/AuthContext.tsx
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 
-// Create an axios instance with the backend URL
-const api = axios.create({
-  baseURL: 'http://localhost:3001',
-  headers: {
-    'Content-Type': 'application/json'
-  }
-});
+// Define the Domain interface
+interface Domain {
+  id: number;
+  name: string;
+  companyName: string;
+  supplyChainLevel: number;
+}
 
+// Updated User interface
 interface User {
   id: number;
   email: string;
   isAdmin: boolean;
-  domainId: number;             // Added domainId
-  domain: string;
+  domainId: number;
+  domain: Domain;
   companyName: string;
 }
 
@@ -49,9 +50,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const token = localStorage.getItem('token');
       if (token) {
         try {
-          api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-          const response = await api.get('/api/validate-token'); // Create this endpoint
-          setUser(response.data.user);
+          axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+          const response = await axios.get('/api/validate-token'); // Ensure this endpoint includes domain details
+          if (response.data.user) {
+            setUser(response.data.user);
+            localStorage.setItem('user', JSON.stringify(response.data.user));
+          } else {
+            logout();
+          }
         } catch (error) {
           console.error('Token validation failed:', error);
           logout();
@@ -64,7 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (email: string, password: string) => {
     try {
-      const response = await api.post('/api/login', {
+      const response = await axios.post('/api/login', {
         email,
         password,
       });
@@ -72,15 +78,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const { token, user } = response.data;
       
       // Set token for future requests
-      api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       
       // Save to localStorage
       localStorage.setItem('token', token);
       localStorage.setItem('user', JSON.stringify(user));
       
       setUser(user);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Login error:', error);
+      if (axios.isAxiosError(error)) {
+        const serverError = error.response?.data?.message || 'Invalid credentials';
+        throw new Error(serverError);
+      }
       throw new Error('Invalid credentials');
     }
   };
@@ -93,7 +103,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     supplyChainLevel: string
   ) => {
     try {
-      const response = await api.post('/api/register', {
+      const response = await axios.post('/api/register', {
         email,
         password,
         companyName,
@@ -107,7 +117,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // Don't automatically log in - require email verification in the future
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Registration error:', error);
       if (axios.isAxiosError(error)) {
         // Log more detailed error information
@@ -132,7 +142,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    delete api.defaults.headers.common['Authorization'];
+    delete axios.defaults.headers.common['Authorization'];
     setUser(null);
   };
 

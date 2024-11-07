@@ -229,7 +229,12 @@ const authenticateToken = async (
         email: user.email,
         isAdmin: user.isAdmin,
         domainId: user.domainId,
-        domain: user.domain.name,
+        domain: {
+          id: user.domain.id,
+          name: user.domain.name,
+          companyName: user.domain.companyName,
+          supplyChainLevel: user.domain.supplyChainLevel,
+        },
       };
 
       next();
@@ -413,7 +418,7 @@ app.post('/api/test-email', async (_req: Request, res: Response): Promise<void> 
   }
 });
 
-// Auth routes
+// /api/login endpoint
 app.post('/api/login', async (
   req: Request,
   res: Response,
@@ -471,8 +476,13 @@ app.post('/api/login', async (
         id: user.id,
         email: user.email,
         isAdmin: user.isAdmin,
-        domainId: user.domainId,               
-        domain: user.domain.name,
+        domainId: user.domainId,
+        domain: {
+          id: user.domain.id,
+          name: user.domain.name,
+          companyName: user.domain.companyName,
+          supplyChainLevel: user.domain.supplyChainLevel,
+        },
         companyName: user.domain.companyName,
       },
     });
@@ -715,10 +725,15 @@ app.post('/api/register', async (req: Request<{}, {}, RegistrationRequest>, res:
 
     res.status(201).json({
       success: true,
-      message: 'Registration successful', // In future: 'Please check your email to verify your account'
+      message: 'Registration successful', // Future: 'Please check your email to verify your account'
       data: {
         email: user.email,
-        domain: domain.name,
+        domain: {
+          id: domain.id,
+          name: domain.name,
+          companyName: domain.companyName,
+          supplyChainLevel: domain.supplyChainLevel,
+        },
         companyName: domain.companyName,
       }
     });
@@ -893,6 +908,18 @@ app.get(
           submissionDate: 'desc',
         },
         include: {
+          claims: {
+            where: {
+              status: 'active',
+              claimingDomainId: req.user!.domainId // Add this line to filter by user's domain,
+            },
+            select: {
+              id: true,
+              amount: true,
+              status: true,
+              claimingDomainId: true
+            }
+          },
           user: {
             select: {
               email: true,
@@ -906,6 +933,14 @@ app.get(
         },
       });
 
+      console.log('Found interventions with claims:', 
+        requests.map(r => ({
+          interventionId: r.interventionId,
+          claimsCount: r.claims.length,
+          claims: r.claims
+        }))
+      );
+
       // Transform the data to match frontend expectations exactly
       const transformedRequests = requests.map((request) => ({
         clientName: request.clientName || '',
@@ -917,6 +952,7 @@ app.get(
         additionality: request.additionality ? 'Yes' : 'No',
         causality: request.causality ? 'Yes' : 'No',
         status: (request.status || '').toLowerCase(),
+        claims: request.claims, 
         deliveryTicketNumber: request.deliveryTicketNumber || '',
         materialName: request.materialName || '',
         materialId: request.materialId || '',
@@ -940,6 +976,14 @@ app.get(
         standards: request.standards || ''
       }));
 
+      console.log('Transformed requests with claims:', 
+        transformedRequests.map(r => ({
+          interventionId: r.interventionId,
+          claimsCount: r.claims?.length,
+          claims: r.claims
+        }))
+      );
+
       res.json(transformedRequests);
     } catch (error) {
       next(error);
@@ -949,28 +993,37 @@ app.get(
 
 // Admin intervention request handling
 app.get(
-  '/api/admin/intervention-requests',
+  '/api/intervention-requests',
   authenticateToken,
   async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
-      if (!req.user?.isAdmin) {
-        res.status(403).json({
-          success: false,
-          message: 'Admin access required',
-        });
-        return;
-      }
-
       const requests = await prisma.interventionRequest.findMany({
+        where: req.user?.isAdmin
+          ? {}
+          : { userId: req.user?.id },
         orderBy: {
           submissionDate: 'desc',
         },
         include: {
+          claims: {
+            where: {
+              status: 'active'
+            },
+            select: {
+              id: true,
+              amount: true,
+              status: true,
+              claimingDomainId: true,
+              expiryDate: true
+            }
+          },
           user: {
             select: {
               email: true,
               domain: {
                 select: {
+                  id: true,
+                  name: true,
                   companyName: true,
                 },
               },
@@ -979,10 +1032,57 @@ app.get(
         },
       });
 
-      res.json({
-        success: true,
-        data: requests,
+      // Transform the data to match frontend expectations exactly
+      const transformedRequests = requests.map((request) => {
+        // Calculate total claimed amount
+        const totalClaimed = request.claims.reduce((sum, claim) => 
+          sum + (claim.amount || 0), 0);
+
+        // Calculate remaining amount
+        const remainingAmount = (request.emissionsAbated || 0) - totalClaimed;
+
+        return {
+          clientName: request.clientName || '',
+          emissionsAbated: request.emissionsAbated || 0,
+          date: request.date ? request.date.toLocaleDateString() : '',
+          interventionId: request.interventionId || '',
+          modality: request.modality || '',
+          geography: request.geography || '',
+          additionality: request.additionality ? 'Yes' : 'No',
+          causality: request.causality ? 'Yes' : 'No',
+          status: (request.status || '').toLowerCase(),
+          deliveryTicketNumber: request.deliveryTicketNumber || '',
+          materialName: request.materialName || '',
+          materialId: request.materialId || '',
+          vendorName: request.vendorName || '',
+          quantity: request.quantity || 0,
+          unit: request.unit || '',
+          amount: request.amount || 0,
+          materialSustainabilityStatus: request.materialSustainabilityStatus || false,
+          interventionType: request.interventionType || '',
+          biofuelProduct: request.lowCarbonFuel || '',
+          baselineFuelProduct: request.baselineFuelProduct || '',
+          typeOfVehicle: request.typeOfVehicle || '',
+          year: request.date ? new Date(request.date).getFullYear().toString() : '',
+          typeOfFeedstock: request.feedstock || '',
+          emissionReductionPercentage: request.emissionReductionPercentage || 0,
+          intensityOfBaseline: request.intensityOfBaseline || '',
+          intensityLowCarbonFuel: request.intensityLowCarbonFuel || '',
+          certification: request.certificationScheme || '',
+          scope: request.scope || '',
+          thirdPartyVerifier: request.thirdPartyVerifier || '',
+          standards: request.standards || '',
+          // Add these crucial fields
+          claims: request.claims,
+          remainingAmount: remainingAmount,
+          totalAmount: request.emissionsAbated || 0,
+          activeClaims: request.claims.length,
+          // Add domain information
+          domain: request.user.domain
+        };
       });
+
+      res.json(transformedRequests);
     } catch (error) {
       next(error);
     }
@@ -1186,7 +1286,11 @@ app.post('/api/claims', authenticateToken, async (req: AuthRequest, res: Respons
           ]
         },
         include: {
-          claims: true
+          claims: {
+            where: {
+              status: 'active'
+            }
+          }
         }
       });
 
@@ -1194,25 +1298,54 @@ app.post('/api/claims', authenticateToken, async (req: AuthRequest, res: Respons
         throw new Error(`Intervention not found with ID: ${interventionId}`);
       }
 
-      // Calculate available amount
-      const totalClaimed = interventionRequest.claims
-        .filter(claim => claim.status === 'active')
-        .reduce((sum, claim) => sum + claim.amount, 0);
-      
-      const available = interventionRequest.emissionsAbated - totalClaimed;
-
-      if (amount > available) {
-        throw new Error(`Insufficient available amount. Available: ${available.toFixed(2)} tCO2e`);
-      }
-
-      // Get domain
+      // Get domain with supply chain level
       const domain = await tx.domain.findUnique({
-        where: { id: req.user!.domainId }
+        where: { id: req.user!.domainId },
+        select: { 
+          id: true,
+          name: true,
+          companyName: true,
+          supplyChainLevel: true 
+        }
       });
 
       if (!domain) {
         throw new Error('Domain not found');
       }
+
+      // Calculate total claimed at this level
+      const existingClaimsAtLevel = await tx.carbonClaim.findMany({
+        where: {
+          interventionId: interventionRequest.interventionId,
+          claimLevel: domain.supplyChainLevel,
+          status: 'active'
+        }
+      });
+
+      const totalClaimedAtLevel = existingClaimsAtLevel.reduce(
+        (sum, claim) => sum + claim.amount, 
+        0
+      );
+
+      // Calculate total claimed across all levels
+      const totalClaimedAllLevels = interventionRequest.claims
+        .reduce((sum, claim) => sum + claim.amount, 0);
+      
+      // Validate amounts
+      const newTotalAtLevel = totalClaimedAtLevel + parseFloat(amount.toString());
+      if (newTotalAtLevel > interventionRequest.emissionsAbated) {
+        throw new Error(`Cannot claim more than available amount at this level. Available: ${(interventionRequest.emissionsAbated - totalClaimedAtLevel).toFixed(2)} tCO2e`);
+      }
+
+      const available = interventionRequest.emissionsAbated - totalClaimedAllLevels;
+      if (parseFloat(amount.toString()) > available) {
+        throw new Error(`Insufficient available amount. Available across all levels: ${available.toFixed(2)} tCO2e`);
+      }
+
+      // Get next partial claim sequence
+      const maxSequence = existingClaimsAtLevel.length > 0 
+        ? Math.max(...existingClaimsAtLevel.map(c => c.partialClaimSequence))
+        : 0;
 
       // Create claim
       const claim = await tx.carbonClaim.create({
@@ -1222,7 +1355,10 @@ app.post('/api/claims', authenticateToken, async (req: AuthRequest, res: Respons
           amount: parseFloat(amount.toString()),
           vintage: parseInt(interventionRequest.vintage.toString()),
           expiryDate: new Date(Date.now() + (2 * 365 * 24 * 60 * 60 * 1000)),
-          status: 'active'
+          status: 'active',
+          claimLevel: domain.supplyChainLevel,
+          partialClaimSequence: maxSequence + 1,
+          totalClaimedAtLevel: newTotalAtLevel
         }
       });
 
@@ -1288,7 +1424,7 @@ app.post('/api/claims', authenticateToken, async (req: AuthRequest, res: Respons
       await tx.interventionRequest.update({
         where: { id: interventionRequest.id },
         data: {
-          remainingAmount: available - amount
+          remainingAmount: available - parseFloat(amount.toString())
         }
       });
 
@@ -1312,6 +1448,7 @@ app.post('/api/claims', authenticateToken, async (req: AuthRequest, res: Respons
         success: false,
         message: error.message,
         errorType: error.message.includes('Insufficient available amount') ? 'INSUFFICIENT_AMOUNT' :
+                  error.message.includes('Cannot claim more than available amount at this level') ? 'INSUFFICIENT_LEVEL_AMOUNT' :
                   error.message.includes('Intervention not found') ? 'INTERVENTION_NOT_FOUND' :
                   error.message.includes('PDF generation failed') ? 'PDF_GENERATION_FAILED' :
                   'UNKNOWN_ERROR'
@@ -2075,14 +2212,16 @@ app.get('/api/trading-partners', authenticateToken, async (req: AuthRequest, res
           select: {
             id: true,
             name: true,
-            companyName: true
+            companyName: true,
+            supplyChainLevel: true // Included
           }
         },
         domain2: {
           select: {
             id: true,
             name: true,
-            companyName: true
+            companyName: true,
+            supplyChainLevel: true // Included
           }
         }
       }
@@ -2098,7 +2237,8 @@ app.get('/api/trading-partners', authenticateToken, async (req: AuthRequest, res
       return {
         id: partner.id,
         name: partner.name,
-        companyName: partner.companyName
+        companyName: partner.companyName,
+        supplyChainLevel: partner.supplyChainLevel // Included
       };
     });
 
@@ -2108,6 +2248,7 @@ app.get('/api/trading-partners', authenticateToken, async (req: AuthRequest, res
     next(error);
   }
 });
+
 
 app.patch('/api/partnerships/:id', authenticateToken, async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {

@@ -10,154 +10,156 @@ generator client {
 }
 
 model User {
-  id                    Int                   @id @default(autoincrement())
-  email                 String                @unique
-  password              String
-  isAdmin               Boolean               @default(false)
+  id                   Int                   @id @default(autoincrement())
+  email                String                @unique
+  password             String
+  isAdmin              Boolean               @default(false)
   isVerified           Boolean               @default(false)
-  domain                Domain                @relation(fields: [domainId], references: [id])
-  domainId              Int
-  createdAt             DateTime              @default(now())
-  updatedAt             DateTime              @updatedAt
-  interventionRequests  InterventionRequest[]
-  
+  domain               Domain                @relation(fields: [domainId], references: [id])
+  domainId             Int
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  interventionRequests InterventionRequest[]
+
   // **Added Relation Field for Transfers Created by User**
-  createdTransfers      Transfer[]            @relation("UserCreatedTransfers")
+  createdTransfers Transfer[] @relation("UserCreatedTransfers")
 }
 
 model Domain {
-  id                      Int                      @id @default(autoincrement())
-  name                    String                   @unique
-  companyName             String
-  supplyChainLevel       Int                     // Level in supply chain, e.g., 1 for suppliers, 2 for manufacturers, etc.
-  users                   User[]
-  interventions           Intervention[]
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-  transfersOut            Transfer[]               @relation("SourceDomain")
-  transfersIn             Transfer[]               @relation("TargetDomain")
-  partnershipsAsFirst     DomainPartnership[]      @relation("PartnershipDomain1")
-  partnershipsAsSecond    DomainPartnership[]      @relation("PartnershipDomain2")
-  notifications           Notification[]
-  claims                 CarbonClaim[]        @relation("DomainClaims")
+  id                   Int                 @id @default(autoincrement())
+  name                 String              @unique
+  companyName          String
+  supplyChainLevel     Int // Level in supply chain, e.g., 1 for suppliers, 2 for manufacturers, etc.
+  users                User[]
+  interventions        Intervention[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  transfersOut         Transfer[]          @relation("SourceDomain")
+  transfersIn          Transfer[]          @relation("TargetDomain")
+  partnershipsAsFirst  DomainPartnership[] @relation("PartnershipDomain1")
+  partnershipsAsSecond DomainPartnership[] @relation("PartnershipDomain2")
+  notifications        Notification[]
+  claims               CarbonClaim[]       @relation("DomainClaims")
 }
 
 model Intervention {
-  id            Int          @id @default(autoincrement())
-  domain        Domain       @relation(fields: [domainId], references: [id])
-  domainId      Int
+  id       Int    @id @default(autoincrement())
+  domain   Domain @relation(fields: [domainId], references: [id])
+  domainId Int
 }
 
 model InterventionRequest {
-  id                        String         @id @default(cuid())
-  userId                    Int      
-  clientName                String         @default("Unknown Client")
-  emissionsAbated          Float          @default(0)
-  date                     DateTime        @default(now())
-  interventionId           String         @unique
-  modality                 String
-  geography                String
-  additionality            Boolean        @default(false)
-  causality               Boolean         @default(false)
-  status                  String
-  deliveryTicketNumber    String?
-  materialName            String?
-  materialId              String?
-  vendorName              String?
-  quantity                Float?
-  unit                    String?
-  amount                  Float?
+  id                           String    @id @default(cuid())
+  userId                       Int
+  clientName                   String    @default("Unknown Client")
+  emissionsAbated              Float     @default(0)
+  date                         DateTime  @default(now())
+  interventionId               String    @unique
+  modality                     String
+  geography                    String
+  additionality                Boolean   @default(false)
+  causality                    Boolean   @default(false)
+  status                       String
+  deliveryTicketNumber         String?
+  materialName                 String?
+  materialId                   String?
+  vendorName                   String?
+  quantity                     Float?
+  unit                         String?
+  amount                       Float?
   materialSustainabilityStatus Boolean?
-  interventionType        String?
-  lowCarbonFuel          String         @default("n/a")  // biofuelProduct in frontend
-  baselineFuelProduct     String?
-  typeOfVehicle          String?
-  feedstock              String         @default("n/a")  // typeOfFeedstock in frontend
-  emissionReductionPercentage Float?
-  intensityOfBaseline     String?
-  intensityLowCarbonFuel  String?
-  certificationScheme     String         @default("n/a") // certification in frontend
-  scope                   String?
-  thirdPartyVerifier     String?
-  standards              String?
-  vesselType             String?
-  lowCarbonFuelLiters    String?
-  lowCarbonFuelMT        String?
-  scope3EmissionsAbated  String?
-  ghgEmissionSaving      String
-  vintage                Int
-  thirdPartyVerification String
-  otherCertificationScheme String?
-  notificationSent       Boolean         @default(false)
-  submissionDate         DateTime        @default(now())
-  reviewedAt             DateTime?
-  reviewedBy             String?
-  comments               String?
-  totalAmount            Float           @default(0)
-  remainingAmount        Float           @default(0) 
-  
+  interventionType             String?
+  lowCarbonFuel                String    @default("n/a") // biofuelProduct in frontend
+  baselineFuelProduct          String?
+  typeOfVehicle                String?
+  feedstock                    String    @default("n/a") // typeOfFeedstock in frontend
+  emissionReductionPercentage  Float?
+  intensityOfBaseline          String?
+  intensityLowCarbonFuel       String?
+  certificationScheme          String    @default("n/a") // certification in frontend
+  scope                        String?
+  thirdPartyVerifier           String?
+  standards                    String?
+  vesselType                   String?
+  lowCarbonFuelLiters          String?
+  lowCarbonFuelMT              String?
+  scope3EmissionsAbated        String?
+  ghgEmissionSaving            String
+  vintage                      Int
+  thirdPartyVerification       String
+  otherCertificationScheme     String?
+  notificationSent             Boolean   @default(false)
+  submissionDate               DateTime  @default(now())
+  reviewedAt                   DateTime?
+  reviewedBy                   String?
+  comments                     String?
+  totalAmount                  Float     @default(0)
+  remainingAmount              Float     @default(0)
+
   // Relations
-  user                   User            @relation(fields: [userId], references: [id])
-  transfersAsSource      Transfer[]      @relation("SourceIntervention")
-  transfersAsTarget      Transfer[]      @relation("TargetIntervention")
-  claims                 CarbonClaim[]
+  user            User          @relation(fields: [userId], references: [id])
+  sourceTransfers Transfer[]    @relation("SourceIntervention") // Changed from transfersAsSource
+  targetTransfers Transfer[]    @relation("TargetIntervention") // Changed from transfersAsTarget
+  claims          CarbonClaim[]
 
   @@index([status])
   @@index([clientName])
 }
 
 model CarbonClaim {
-  id               String              @id @default(cuid())
-  intervention     InterventionRequest @relation(fields: [interventionId], references: [interventionId])
-  interventionId   String
-  claimingDomain   Domain              @relation("DomainClaims", fields: [claimingDomainId], references: [id])
-  claimingDomainId Int
-  transfers        Transfer[]          @relation("ClaimTransfers")
-  claimLevel       Int
-  @@unique([interventionId, claimLevel], name: "unique_claim_per_tier")
-  amount           Float               // Amount claimed in tCO2e
-  vintage          Int                 // Year of the vintage
-  expiryDate       DateTime            // When the claim expires
-  claimDate        DateTime            @default(now())
-  status           String              @default("active") // active, expired, revoked
-  statement        ClaimStatement?     // One-to-one relation with the statement
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
+  id                   String              @id @default(cuid())
+  intervention         InterventionRequest @relation(fields: [interventionId], references: [interventionId])
+  interventionId       String
+  claimingDomain       Domain              @relation("DomainClaims", fields: [claimingDomainId], references: [id])
+  claimingDomainId     Int
+  transfers            Transfer[]          @relation("ClaimTransfers")
+  claimLevel           Int
+  partialClaimSequence Int                 @default(1) // New field for tracking partial claims
+  totalClaimedAtLevel  Float? // New field to track total claimed at this level
+  amount               Float
+  vintage              Int
+  expiryDate           DateTime
+  claimDate            DateTime            @default(now())
+  status               String              @default("active")
+  statement            ClaimStatement?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
 
+  @@unique([interventionId, claimLevel, partialClaimSequence]) // Updated unique constraint
   @@index([interventionId])
   @@index([claimingDomainId])
   @@index([vintage])
   @@index([status])
 }
 
-
 model Transfer {
-  id                    String              @id @default(cuid())
-  sourceIntervention    InterventionRequest @relation("SourceIntervention", fields: [sourceInterventionId], references: [id])
-  sourceInterventionId  String
-  // Removed targetIntervention relation since we keep same intervention
-  sourceDomain          Domain              @relation("SourceDomain", fields: [sourceDomainId], references: [id])
+  id                   String              @id @default(cuid())
+  sourceIntervention   InterventionRequest @relation("SourceIntervention", fields: [sourceInterventionId], references: [id])
+  sourceInterventionId String
+  targetIntervention   InterventionRequest @relation("TargetIntervention", fields: [targetInterventionId], references: [id])
+  targetInterventionId String
+  sourceDomain         Domain              @relation("SourceDomain", fields: [sourceDomainId], references: [id])
   sourceClaim          CarbonClaim         @relation("ClaimTransfers", fields: [sourceClaimId], references: [id])
   sourceClaimId        String
-  sourceDomainId        Int
-  targetDomain          Domain              @relation("TargetDomain", fields: [targetDomainId], references: [id])
-  targetDomainId        Int
-  amount                Float               
-  status                String              @default("pending") 
-  createdAt             DateTime            @default(now())
-  completedAt           DateTime?
-  notes                 String?
-  createdBy             User                @relation("UserCreatedTransfers", fields: [createdById], references: [id])
-  createdById           Int
-  
-  // Chain tracking
-  parentTransfer        Transfer?           @relation("TransferChain", fields: [parentTransferId], references: [id])
-  parentTransferId      String?
-  childTransfers        Transfer[]          @relation("TransferChain")
+  sourceDomainId       Int
+  targetDomain         Domain              @relation("TargetDomain", fields: [targetDomainId], references: [id])
+  targetDomainId       Int
+  amount               Float
+  status               String              @default("pending")
+  createdAt            DateTime            @default(now())
+  completedAt          DateTime?
+  notes                String?
+  createdBy            User                @relation("UserCreatedTransfers", fields: [createdById], references: [id])
+  createdById          Int
 
-  // Domain level tracking (new fields to track supply chain levels)
-  sourceLevel           Int                 // Add this to track level at time of transfer
-  targetLevel           Int                 // Add this to track level at time of transfer
+  // Chain tracking
+  parentTransfer   Transfer?  @relation("TransferChain", fields: [parentTransferId], references: [id])
+  parentTransferId String?
+  childTransfers   Transfer[] @relation("TransferChain")
+
+  // Domain level tracking
+  sourceLevel Int
+  targetLevel Int
 
   @@index([status])
   @@index([sourceInterventionId])
@@ -166,22 +168,22 @@ model Transfer {
 }
 
 model ClaimStatement {
-  id              String       @id @default(cuid())
-  claim           CarbonClaim  @relation(fields: [claimId], references: [id])
-  claimId         String       @unique
-  pdfUrl          String       // URL to stored PDF
-  templateVersion String       // Version of template used
-  createdAt       DateTime     @default(now())
-  metadata        Json?        // Additional metadata about the statement
+  id              String      @id @default(cuid())
+  claim           CarbonClaim @relation(fields: [claimId], references: [id])
+  claimId         String      @unique
+  pdfUrl          String // URL to stored PDF
+  templateVersion String // Version of template used
+  createdAt       DateTime    @default(now())
+  metadata        Json? // Additional metadata about the statement
 }
 
 model Notification {
   id        String   @id @default(cuid())
-  type      String   // TRANSFER_APPROVED, TRANSFER_REJECTED, etc.
+  type      String // TRANSFER_APPROVED, TRANSFER_REJECTED, etc.
   message   String
   domain    Domain   @relation(fields: [domainId], references: [id])
   domainId  Int
-  metadata  Json?    // Additional data specific to notification type
+  metadata  Json? // Additional data specific to notification type
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 
@@ -190,14 +192,14 @@ model Notification {
 }
 
 model DomainPartnership {
-  id                Int      @id @default(autoincrement())
-  domain1           Domain   @relation("PartnershipDomain1", fields: [domain1Id], references: [id])
-  domain1Id         Int
-  domain2           Domain   @relation("PartnershipDomain2", fields: [domain2Id], references: [id])
-  domain2Id         Int
-  status            String   @default("pending") // pending, active, inactive
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id        Int      @id @default(autoincrement())
+  domain1   Domain   @relation("PartnershipDomain1", fields: [domain1Id], references: [id])
+  domain1Id Int
+  domain2   Domain   @relation("PartnershipDomain2", fields: [domain2Id], references: [id])
+  domain2Id Int
+  status    String   @default("pending") // pending, active, inactive
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([domain1Id, domain2Id])
   @@index([domain1Id])

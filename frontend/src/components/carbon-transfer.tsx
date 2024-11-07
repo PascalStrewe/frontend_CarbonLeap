@@ -495,17 +495,49 @@ const CarbonTransfer: React.FC = () => {
                         >
                           <option value="">Select intervention</option>
                           {interventionData
-                            .filter(intervention => 
-                              intervention.claims?.some(claim => 
-                                claim.status === 'active' && 
-                                claim.claimingDomainId === user?.domainId
-                              )
-                            )
-                            .map((intervention) => (
-                              <option key={intervention.interventionId} value={intervention.interventionId}>
-                                {intervention.modality} - {intervention.emissionsAbated} tCO2e
-                              </option>
-                          ))}
+                            .filter(intervention => {
+                              // Debug log to see what's available
+                              console.log('Checking intervention:', {
+                                id: intervention.interventionId,
+                                claims: intervention.claims,
+                                userDomainId: user?.domainId
+                              });
+                              
+                              return intervention.claims?.some(claim => {
+                                // Check if claim exists and is active
+                                const isValidClaim = claim && 
+                                  claim.status === 'active' && 
+                                  claim.claimingDomainId === user?.domainId;
+                                  
+                                // Debug log for claims
+                                console.log('Checking claim:', {
+                                  claimId: claim?.id,
+                                  status: claim?.status,
+                                  claimingDomainId: claim?.claimingDomainId,
+                                  isValid: isValidClaim
+                                });
+                                
+                                return isValidClaim;
+                              });
+                            })
+                            .map((intervention) => {
+                              // Get total amount of active claims for this intervention
+                              const activeClaims = intervention.claims
+                                ?.filter(claim => 
+                                  claim.status === 'active' && 
+                                  claim.claimingDomainId === user?.domainId
+                                )
+                                .reduce((sum, claim) => sum + (claim.amount || 0), 0);
+                                
+                              return (
+                                <option 
+                                  key={intervention.interventionId} 
+                                  value={intervention.interventionId}
+                                >
+                                  {intervention.modality} - {activeClaims?.toFixed(2)} tCO2e available
+                                </option>
+                              );
+                            })}
                         </select>
                       </div>
                       {/* Claim to Transfer */}
